@@ -1,20 +1,38 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
+  collection,
   doc,
   getDoc,
+  onSnapshot,
+  query,
   serverTimestamp,
   setDoc,
   updateDoc,
+  where,
 } from 'firebase/firestore';
-import { AlertCircle, ArrowLeft, Check, ClipboardCheck, Edit3, FileText, PlusCircle, X } from 'lucide-react';
+import {
+  AlertCircle,
+  ArrowLeft,
+  Check,
+  ClipboardCheck,
+  Copy,
+  Edit3,
+  FileText,
+  LogIn,
+  PlusCircle,
+  Power,
+  Radio,
+  X,
+} from 'lucide-react';
 import {
   db,
   generateRoomCode,
+  getTimestampMillis,
   handleFirestoreError,
   isQuadNameValid,
   OperationType,
 } from '../firebase';
-import type { SessionType, UserProfile } from '../types';
+import type { Room, SessionType, UserProfile } from '../types';
 import { DUO_IMAGES, DuoArtwork, playDuoSound } from './DuoIcons';
 
 interface RoleHubProps {
@@ -38,6 +56,72 @@ export const RoleHub: React.FC<RoleHubProps> = ({
   const [editingName, setEditingName] = useState(false);
   const [editedName, setEditedName] = useState(profile.fullNameQuad);
   const [savingName, setSavingName] = useState(false);
+
+  // Supervisor's open rooms (waiting or active) persisted in Firestore across exits/reloads
+  const [openRooms, setOpenRooms] = useState<Room[]>([]);
+  const [copiedRoomId, setCopiedRoomId] = useState<string | null>(null);
+  const [confirmCloseRoomId, setConfirmCloseRoomId] = useState<string | null>(null);
+  const [closingRoomId, setClosingRoomId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const rPath = 'rooms';
+    const q = query(
+      collection(db, 'rooms'),
+      where('supervisorId', '==', profile.uid)
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const list: Room[] = [];
+        snap.forEach((d) => {
+          const r = d.data() as Room;
+          if (r.status === 'waiting' || r.status === 'active') {
+            list.push(r);
+          }
+        });
+        list.sort(
+          (a, b) =>
+            getTimestampMillis(b.updatedAt || b.createdAt) -
+            getTimestampMillis(a.updatedAt || a.createdAt)
+        );
+        setOpenRooms(list);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, rPath);
+      }
+    );
+    return () => unsub();
+  }, [profile.uid]);
+
+  const handleCopyRoomCode = async (code: string) => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopiedRoomId(code);
+      playDuoSound('pop');
+      setTimeout(() => {
+        setCopiedRoomId((cur) => (cur === code ? null : cur));
+      }, 1600);
+    } catch {
+      // Ignore clipboard failure
+    }
+  };
+
+  const handleCloseOpenRoom = async (roomId: string) => {
+    if (closingRoomId) return;
+    setClosingRoomId(roomId);
+    try {
+      await updateDoc(doc(db, 'rooms', roomId), {
+        status: 'finished',
+        updatedAt: serverTimestamp(),
+      });
+      setConfirmCloseRoomId(null);
+      playDuoSound('pop');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `rooms/${roomId}`);
+    } finally {
+      setClosingRoomId(null);
+    }
+  };
 
   const handleSaveName = async () => {
     const cleaned = editedName.trim().replace(/\s+/g, ' ');
@@ -261,6 +345,124 @@ export const RoleHub: React.FC<RoleHubProps> = ({
         <div className="flex items-center gap-3 p-4 rounded-2xl bg-[#FFDFE0] border-2 border-[#FF4B4B] text-[#EA2B2B] text-sm font-extrabold">
           <AlertCircle className="w-5 h-5 shrink-0" />
           <span>{errorMsg}</span>
+        </div>
+      )}
+
+      {/* Supervisor Open Rooms — Stay Open After Leaving or Refreshing */}
+      {openRooms.length > 0 && (
+        <div className="duo-card p-4 sm:p-6 border-[#58CC02] bg-[#D7FFB8]/30 flex flex-col gap-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-[#58CC02] text-white flex items-center justify-center shrink-0">
+                <Radio className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-base sm:text-lg font-black text-[#3C3C3C]">
+                  غرفك المفتوحة حالياً ({openRooms.length})
+                </h2>
+                <p className="text-xs font-bold text-[#777777]">
+                  تبقى الغرفة مفتوحة حتى لو خرجت أو حدّثت الصفحة — اضغط دخول للعودة إليها فوراً
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2.5">
+            {openRooms.map((r) => {
+              const isInteractive = r.sessionType === 'interactive';
+              const isConfirmingClose = confirmCloseRoomId === r.id;
+              return (
+                <div
+                  key={r.id}
+                  className="rounded-2xl bg-white border-2 border-[#E5E5E5] p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                >
+                  <div className="flex flex-col gap-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className={`px-2.5 py-0.5 rounded-lg text-[11px] font-black border ${
+                          r.status === 'active'
+                            ? 'bg-[#D7FFB8] border-[#58CC02] text-[#46A302]'
+                            : 'bg-[#FFF4CC] border-[#FFC800] text-[#9A6B00]'
+                        }`}
+                      >
+                        {r.status === 'active' ? 'السبورة مفتوحة الآن' : 'في غرفة الانتظار'}
+                      </span>
+                      <span
+                        className={`px-2.5 py-0.5 rounded-lg text-[11px] font-black border ${
+                          isInteractive
+                            ? 'bg-[#DDF4FF] border-[#1CB0F6] text-[#1899D6]'
+                            : 'bg-[#F7F7F7] border-[#E5E5E5] text-[#3C3C3C]'
+                        }`}
+                      >
+                        {isInteractive ? 'وضع تفاعلي' : 'وضع اختبار'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void handleCopyRoomCode(r.id)}
+                        className="flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-[#F7F7F7] hover:bg-[#DDF4FF] border border-[#E5E5E5] text-xs font-black text-[#1899D6] cursor-pointer"
+                        title="نسخ رمز الغرفة"
+                      >
+                        <span className="font-latin tracking-wider">{r.id}</span>
+                        {copiedRoomId === r.id ? (
+                          <Check className="w-3 h-3 text-[#58CC02]" />
+                        ) : (
+                          <Copy className="w-3 h-3" />
+                        )}
+                      </button>
+                    </div>
+                    <h3 className="text-sm sm:text-base font-black text-[#3C3C3C] truncate">
+                      {r.title}
+                    </h3>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    {isConfirmingClose ? (
+                      <>
+                        <button
+                          type="button"
+                          disabled={closingRoomId === r.id}
+                          onClick={() => void handleCloseOpenRoom(r.id)}
+                          className="duo-btn px-3 py-2 rounded-xl bg-[#FF4B4B] border-2 border-b-3 border-[#EA2B2B] text-white text-xs font-black cursor-pointer disabled:opacity-60"
+                        >
+                          {closingRoomId === r.id ? 'جاري الإغلاق...' : 'تأكيد إغلاق الغرفة'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmCloseRoomId(null)}
+                          className="duo-btn px-3 py-2 rounded-xl bg-white border-2 border-b-3 border-[#E5E5E5] text-xs font-black text-[#777777] cursor-pointer"
+                        >
+                          إلغاء
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmCloseRoomId(r.id)}
+                          className="duo-btn flex items-center gap-1 px-3 py-2.5 rounded-xl bg-white hover:bg-[#FFDFE0] border-2 border-b-4 border-[#E5E5E5] text-xs font-black text-[#EA2B2B] cursor-pointer"
+                          title="إغلاق الغرفة نهائياً"
+                        >
+                          <Power className="w-3.5 h-3.5" />
+                          <span>إغلاق</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            playDuoSound('join');
+                            onEnterRoom(r.id, 'supervisor');
+                          }}
+                          className="duo-btn flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-[#58CC02] hover:bg-[#61E002] border-2 border-b-4 border-[#46A302] text-white text-xs sm:text-sm font-black cursor-pointer"
+                        >
+                          <LogIn className="w-4 h-4" />
+                          <span>دخول للغرفة</span>
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
