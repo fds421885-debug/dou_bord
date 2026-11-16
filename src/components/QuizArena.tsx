@@ -1977,7 +1977,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                 ? 'أوقف المشرف الكتابة عنك مؤقتاً — يمكنك المشاهدة والتكبير فقط'
                 : 'وضع المشاهدة المباشرة — يمكنك التكبير أو التحريك لمتابعة الشرح'
             }
-            syncIntervalMs={220}
+            syncIntervalMs={600}
             heightClass="h-[320px] sm:h-[460px] md:h-[560px]"
           />
         </div>

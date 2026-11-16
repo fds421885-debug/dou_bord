@@ -1,12 +1,12 @@
 {
-  "projectId": "hypnic-rush-lf900",
-  "appId": "1:776189344162:web:e898b139363955866fdafb",
-  "apiKey": "AIzaSyB8fiDHMJ5_CMb5WB5-CZzGdc2I109mIBE",
-  "authDomain": "hypnic-rush-lf900.firebaseapp.com",
+  "projectId": "omran-ffbad",
+  "appId": "1:664438563645:web:b22fac10a7b793cf291b54",
+  "apiKey": "AIzaSyDEzjLSKGT89RkZk_r3PnWooCyuYok4pyc",
+  "authDomain": "omran-ffbad.firebaseapp.com",
   "firestoreDatabaseId": "ai-studio-631c9644-585f-4567-a7c8-3132e55edcb5",
-  "storageBucket": "hypnic-rush-lf900.firebasestorage.app",
-  "messagingSenderId": "776189344162",
+  "storageBucket": "omran-ffbad.firebasestorage.app",
+  "messagingSenderId": "664438563645",
   "measurementId": "",
-  "oAuthClientId": "776189344162-5u5vdj4v8binmk6o9lg3g6ce9d41io7j.apps.googleusercontent.com",
+  "oAuthClientId": "664438563645-hr1ecp42requjomehcvnqd31kklg87af.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }

@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { signInWithPopup, signOut, type User } from 'firebase/auth';
-import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { LogIn, UserCheck, AlertCircle, LogOut } from 'lucide-react';
 import {
   auth,
@@ -9,6 +9,7 @@ import {
   handleFirestoreError,
   isQuadNameValid,
   OperationType,
+  UPGRADE_FIRESTORE_URL,
 } from '../firebase';
 import type { UserProfile } from '../types';
 import { DUO_IMAGES, DuoArtwork, playDuoSound } from './DuoIcons';
@@ -17,6 +18,34 @@ interface AuthGateProps {
   firebaseUser: User | null;
   profile: UserProfile | null;
   onProfileSaved: (profile: UserProfile) => void;
+}
+
+function formatAuthOrFirestoreError(err: unknown, user?: User | null): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const lower = raw.toLowerCase();
+
+  if (lower.includes('quota exceeded') || lower.includes('resource-exhausted')) {
+    return `تم تجاوز الحصة اليومية المجانية لقاعدة البيانات (Firestore Quota exceeded). تتجدد الحصة تلقائياً في اليوم التالي، أو يمكنك الترقية من: ${UPGRADE_FIRESTORE_URL}`;
+  }
+  if (lower.includes('auth/unauthorized-domain')) {
+    return 'هذا النطاق (مثل Netlify) غير مضاف في النطاقات المصرح بها (Authorized domains) في إعدادات Firebase Authentication.';
+  }
+  if (lower.includes('auth/popup-blocked')) {
+    return 'تم حظر نافذة تسجيل الدخول من المتصفح، يرجى السماح بالنوافذ المنبثقة والمحاولة مرة أخرى.';
+  }
+  if (lower.includes('auth/popup-closed-by-user')) {
+    return 'تم إغلاق نافذة تسجيل الدخول قبل إتمام العملية.';
+  }
+  if (user && !user.emailVerified) {
+    return 'بريد هذا الحساب غير مفعّل (email_verified). يرجى تسجيل الدخول بحساب Google مُفعّل البريد.';
+  }
+  if (lower.includes('permission-denied') || lower.includes('permission_denied')) {
+    return 'تعذر حفظ الاسم الرباعي بسبب رفض الصلاحيات من قاعدة البيانات (PERMISSION_DENIED). تأكد من أن البريد مفعّل وحاول تسجيل الخروج ثم الدخول مجدداً.';
+  }
+  if (lower.includes('offline') || lower.includes('unavailable') || lower.includes('network')) {
+    return 'تعذر الاتصال بقاعدة البيانات حالياً. تحقق من اتصال الإنترنت وحاول مرة أخرى.';
+  }
+  return `حدث خطأ أثناء حفظ الاسم الرباعي: ${raw}`;
 }
 
 export const AuthGate: React.FC<AuthGateProps> = ({
@@ -28,6 +57,23 @@ export const AuthGate: React.FC<AuthGateProps> = ({
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (profile?.fullNameQuad) {
+      setQuadName(profile.fullNameQuad);
+      return;
+    }
+    if (firebaseUser) {
+      try {
+        const cached = localStorage.getItem(`duoboard_quad_${firebaseUser.uid}`);
+        if (cached && !quadName) {
+          setQuadName(cached);
+        }
+      } catch {
+        // Ignore storage errors
+      }
+    }
+  }, [firebaseUser?.uid, profile?.fullNameQuad]);
+
   const handleGoogleLogin = async () => {
     setErrorMsg(null);
     setLoading(true);
@@ -35,8 +81,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({
       await signInWithPopup(auth, googleProvider);
       playDuoSound('pop');
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'تعذر تسجيل الدخول عبر جوجل';
-      setErrorMsg(message);
+      setErrorMsg(formatAuthOrFirestoreError(err));
     } finally {
       setLoading(false);
     }
@@ -47,36 +92,52 @@ export const AuthGate: React.FC<AuthGateProps> = ({
     if (!firebaseUser) return;
 
     const cleaned = quadName.trim().replace(/\s+/g, ' ');
-    if (!isQuadNameValid(cleaned)) {
-      setErrorMsg('يرجى إدخال الاسم الرباعي كاملاً (أربع كلمات على الأقل، مثل: محمد أحمد علي السالم)');
+    if (!isQuadNameValid(cleaned) || cleaned.length > 120) {
+      setErrorMsg('يرجى إدخال الاسم الرباعي كاملاً (أربع كلمات على الأقل وبحد أقصى 120 حرفاً، مثل: محمد أحمد علي السالم)');
       return;
     }
 
     setErrorMsg(null);
     setLoading(true);
     const path = `users/${firebaseUser.uid}/private/profile`;
+    const profileRef = doc(db, 'users', firebaseUser.uid, 'private', 'profile');
+
     try {
-      const payload = {
-        uid: firebaseUser.uid,
-        fullNameQuad: cleaned,
-        email: firebaseUser.email || 'user@example.com',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      };
-      await setDoc(doc(db, 'users', firebaseUser.uid, 'private', 'profile'), payload);
+      const existingSnap = await getDoc(profileRef);
+      if (existingSnap.exists()) {
+        await updateDoc(profileRef, {
+          fullNameQuad: cleaned,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(profileRef, {
+          uid: firebaseUser.uid,
+          fullNameQuad: cleaned,
+          email: firebaseUser.email || 'user@example.com',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      try {
+        localStorage.setItem(`duoboard_quad_${firebaseUser.uid}`, cleaned);
+      } catch {
+        // Ignore storage errors
+      }
+
       playDuoSound('correct');
       onProfileSaved({
         uid: firebaseUser.uid,
         fullNameQuad: cleaned,
-        email: firebaseUser.email || '',
+        email: firebaseUser.email || 'user@example.com',
       });
     } catch (err) {
       try {
         handleFirestoreError(err, OperationType.WRITE, path);
       } catch (wrapped) {
-        setErrorMsg('حدث خطأ أثناء حفظ الاسم الرباعي، يرجى المحاولة مرة أخرى.');
         console.error(wrapped);
       }
+      setErrorMsg(formatAuthOrFirestoreError(err, firebaseUser));
     } finally {
       setLoading(false);
     }

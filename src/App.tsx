@@ -8,13 +8,14 @@ import {
   query,
   where,
 } from 'firebase/firestore';
-import { Archive, Home, LogOut } from 'lucide-react';
+import { Archive, Home, LogOut, RefreshCw, AlertCircle } from 'lucide-react';
 import {
   auth,
   db,
   getTimestampMillis,
   handleFirestoreError,
   OperationType,
+  UPGRADE_FIRESTORE_URL,
 } from './firebase';
 import type { Participant, Room, UserProfile } from './types';
 import { AuthGate } from './components/AuthGate';
@@ -107,6 +108,7 @@ export default function App() {
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
+  const [profileLoadError, setProfileLoadError] = useState<string | null>(null);
 
   const [tab, setTab] = useState<'home' | 'saved'>('home');
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
@@ -128,12 +130,86 @@ export default function App() {
     }
   };
 
+  const loadUserProfile = async (user: User) => {
+    setProfileLoading(true);
+    setProfileLoadError(null);
+    const path = `users/${user.uid}/private/profile`;
+    try {
+      const snap = await getDoc(doc(db, 'users', user.uid, 'private', 'profile'));
+      if (snap.exists()) {
+        const data = snap.data() as UserProfile;
+        setProfile(data);
+        try {
+          localStorage.setItem(`duoboard_quad_${user.uid}`, data.fullNameQuad);
+        } catch {
+          // Ignore storage errors
+        }
+
+        // Restore active room if user refreshed the page while inside a room
+        const candidateRoom = getCandidateSavedRoom(user.uid);
+        if (candidateRoom) {
+          try {
+            const rSnap = await getDoc(doc(db, 'rooms', candidateRoom));
+            if (rSnap.exists()) {
+              const rData = rSnap.data() as Room;
+              if (rData.supervisorId === user.uid) {
+                setActiveRoomId(candidateRoom);
+                persistActiveRoom(user.uid, candidateRoom);
+              } else {
+                const pSnap = await getDoc(
+                  doc(db, 'rooms', candidateRoom, 'participants', user.uid)
+                );
+                if (pSnap.exists()) {
+                  setActiveRoomId(candidateRoom);
+                  persistActiveRoom(user.uid, candidateRoom);
+                } else {
+                  persistActiveRoom(user.uid, null);
+                }
+              }
+            } else {
+              persistActiveRoom(user.uid, null);
+            }
+          } catch {
+            persistActiveRoom(user.uid, null);
+          }
+        }
+      } else {
+        setProfile(null);
+      }
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      const lower = raw.toLowerCase();
+      try {
+        handleFirestoreError(err, OperationType.GET, path);
+      } catch (wrapped) {
+        console.error(wrapped);
+      }
+      if (lower.includes('quota exceeded') || lower.includes('resource-exhausted')) {
+        setProfileLoadError(
+          'تم تجاوز الحصة اليومية المجانية لقاعدة البيانات (Firestore Quota exceeded). تتجدد الحصة تلقائياً في اليوم التالي، أو يمكنك الترقية من لوحة Firebase.'
+        );
+      } else if (lower.includes('permission-denied') || lower.includes('permission_denied')) {
+        setProfileLoadError(
+          'تعذر تحميل بيانات الحساب بسبب صلاحيات قاعدة البيانات. تأكد من تفعيل بريد الحساب أو أعد تسجيل الدخول.'
+        );
+      } else {
+        setProfileLoadError(
+          `تعذر الاتصال بقاعدة البيانات لتحميل بيانات حسابك (${raw}).`
+        );
+      }
+    } finally {
+      setProfileLoading(false);
+      setAuthReady(true);
+    }
+  };
+
   // Auth listener & room session restore on refresh
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       setFirebaseUser(user);
       if (!user) {
         setProfile(null);
+        setProfileLoadError(null);
         setActiveRoomId(null);
         setRoom(null);
         setParticipants([]);
@@ -141,50 +217,7 @@ export default function App() {
         return;
       }
 
-      setProfileLoading(true);
-      const path = `users/${user.uid}/private/profile`;
-      try {
-        const snap = await getDoc(doc(db, 'users', user.uid, 'private', 'profile'));
-        if (snap.exists()) {
-          setProfile(snap.data() as UserProfile);
-
-          // Restore active room if user refreshed the page while inside a room
-          const candidateRoom = getCandidateSavedRoom(user.uid);
-          if (candidateRoom) {
-            try {
-              const rSnap = await getDoc(doc(db, 'rooms', candidateRoom));
-              if (rSnap.exists()) {
-                const rData = rSnap.data() as Room;
-                if (rData.supervisorId === user.uid) {
-                  setActiveRoomId(candidateRoom);
-                  persistActiveRoom(user.uid, candidateRoom);
-                } else {
-                  const pSnap = await getDoc(
-                    doc(db, 'rooms', candidateRoom, 'participants', user.uid)
-                  );
-                  if (pSnap.exists()) {
-                    setActiveRoomId(candidateRoom);
-                    persistActiveRoom(user.uid, candidateRoom);
-                  } else {
-                    persistActiveRoom(user.uid, null);
-                  }
-                }
-              } else {
-                persistActiveRoom(user.uid, null);
-              }
-            } catch {
-              persistActiveRoom(user.uid, null);
-            }
-          }
-        } else {
-          setProfile(null);
-        }
-      } catch (err) {
-        handleFirestoreError(err, OperationType.GET, path);
-      } finally {
-        setProfileLoading(false);
-        setAuthReady(true);
-      }
+      await loadUserProfile(user);
     });
     return () => unsub();
   }, []);
@@ -247,13 +280,62 @@ export default function App() {
     );
   }
 
+  if (firebaseUser && !profile && profileLoadError) {
+    return (
+      <div className="min-h-screen bg-white flex items-center justify-center p-4 sm:p-6">
+        <div className="duo-card max-w-lg w-full p-6 sm:p-8 text-center flex flex-col items-center gap-4 border-[#FF4B4B]">
+          <div className="w-14 h-14 rounded-2xl bg-[#FFDFE0] text-[#EA2B2B] flex items-center justify-center">
+            <AlertCircle className="w-8 h-8" />
+          </div>
+          <h1 className="text-xl font-black text-[#3C3C3C]">
+            تعذر تحميل بيانات الحساب مؤقتاً
+          </h1>
+          <p className="text-sm font-bold text-[#777777] leading-relaxed">
+            {profileLoadError}
+          </p>
+          {profileLoadError.includes('Firestore Quota') && (
+            <a
+              href={UPGRADE_FIRESTORE_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs font-black text-[#1899D6] underline"
+            >
+              فتح إعدادات قاعدة البيانات والترقية في Firebase Console
+            </a>
+          )}
+          <div className="flex flex-wrap items-center justify-center gap-3 w-full pt-2">
+            <button
+              type="button"
+              onClick={() => void loadUserProfile(firebaseUser)}
+              className="duo-btn flex items-center gap-2 px-6 py-3 rounded-2xl bg-[#58CC02] hover:bg-[#61E002] border-2 border-b-4 border-[#46A302] text-white text-sm font-black cursor-pointer"
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span>إعادة المحاولة</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void signOut(auth)}
+              className="duo-btn flex items-center gap-2 px-5 py-3 rounded-2xl bg-white border-2 border-b-4 border-[#E5E5E5] text-[#3C3C3C] text-sm font-black cursor-pointer"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>تبديل الحساب</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!firebaseUser || !profile) {
     return (
       <AppErrorBoundary>
         <AuthGate
           firebaseUser={firebaseUser}
           profile={profile}
-          onProfileSaved={(saved) => setProfile(saved)}
+          onProfileSaved={(saved) => {
+            setProfileLoadError(null);
+            setProfile(saved);
+          }}
         />
       </AppErrorBoundary>
     );
