@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   collection,
+  deleteDoc,
   doc,
+  getDocs,
   onSnapshot,
   query,
   serverTimestamp,
@@ -12,17 +14,21 @@ import {
 } from 'firebase/firestore';
 import {
   ArrowRight,
+  Ban,
   Bot,
   Check,
   ChevronLeft,
   ChevronRight,
   Clock,
+  Eraser,
   Eye,
   EyeOff,
+  FilePlus2,
   FileText,
   Flag,
   ImagePlus,
   Loader2,
+  Lock,
   Maximize2,
   Minimize2,
   Minus,
@@ -36,6 +42,8 @@ import {
   Timer,
   Trash2,
   Type,
+  Unlock,
+  Upload,
   Users,
   X,
   ZoomIn,
@@ -47,13 +55,15 @@ import {
   handleFirestoreError,
   OperationType,
 } from '../firebase';
-import { renderPdfToSlideImages } from '../pdfUtils';
+import { compressSlideImageToDataUrl, renderPdfToSlideImages } from '../pdfUtils';
 import type {
   ExplainLayer,
+  InteractiveSlide,
   Participant,
   Question,
   Room,
   SharedExplainBoard,
+  SlideLayer,
   Stroke,
   StudentBoard,
   UserProfile,
@@ -66,6 +76,7 @@ import {
 } from './DuoIcons';
 import { solveQuestionWithAi, type AiSolution } from '../aiClient';
 import {
+  doesStrokeIntersectEraser,
   renderStrokesToDataUrl,
   WhiteboardCanvas,
   WhiteboardPreview,
@@ -145,12 +156,18 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
   const [activeAiLoading, setActiveAiLoading] = useState(false);
   const [activeAiError, setActiveAiError] = useState<string | null>(null);
 
-  // Explain Mode shared whiteboard state (supports simultaneous per-user layers + legacy sharedBoard)
+  // Explain Mode shared whiteboard state (supports simultaneous per-user layers, PDF/image slides, per-user erase & write blocking)
   const [sharedBoardExists, setSharedBoardExists] = useState(false);
   const [sharedStrokes, setSharedStrokes] = useState<Stroke[]>([]);
   const [explainLayers, setExplainLayers] = useState<ExplainLayer[]>([]);
   const [localExplainStrokes, setLocalExplainStrokes] = useState<Stroke[]>([]);
+  const [explainSlides, setExplainSlides] = useState<InteractiveSlide[]>([]);
+  const [explainSlideLayers, setExplainSlideLayers] = useState<SlideLayer[]>([]);
+  const [localSlideExplainStrokes, setLocalSlideExplainStrokes] = useState<Stroke[]>([]);
   const [explainBusy, setExplainBusy] = useState(false);
+  const [explainUploading, setExplainUploading] = useState(false);
+  const [explainUploadStatus, setExplainUploadStatus] = useState('');
+  const [explainUploadError, setExplainUploadError] = useState<string | null>(null);
 
   // Student local strokes & sync state
   const [localStrokes, setLocalStrokes] = useState<Stroke[]>([]);
@@ -167,6 +184,9 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
+  const explainFileInputRef = useRef<HTMLInputElement | null>(null);
+  const explainAppendModeRef = useRef<boolean>(false);
+  const lastExplainEditAtRef = useRef<number>(0);
   const lastInheritedQuestionIdRef = useRef<string | null>(null);
   const fallbackStartMapRef = useRef<Record<string, number>>({});
   const expiredSoundPlayedRef = useRef<string | null>(null);
@@ -190,7 +210,77 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
     return () => unsub();
   }, [room.id]);
 
-  // Subscribe to synchronized Explain Mode shared whiteboard (legacy single doc + collaborative layers)
+  // Subscribe to Explain Mode slides (uploaded images / PDF pages)
+  useEffect(() => {
+    const sPath = `rooms/${room.id}/slides`;
+    const sRef = query(collection(db, 'rooms', room.id, 'slides'), where('roomId', '==', room.id));
+    const unsub = onSnapshot(
+      sRef,
+      (snap) => {
+        const list: InteractiveSlide[] = [];
+        snap.forEach((d) => list.push(d.data() as InteractiveSlide));
+        list.sort((a, b) => a.pageIndex - b.pageIndex);
+        setExplainSlides(list);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, sPath);
+      }
+    );
+    return () => unsub();
+  }, [room.id]);
+
+  const explainSlideIndex = room.currentSlideIndex ?? 0;
+  const activeExplainSlide = useMemo(() => {
+    if (explainSlideIndex <= 0 || explainSlides.length === 0) return null;
+    return explainSlides.find((s) => s.pageIndex === explainSlideIndex) ?? null;
+  }, [explainSlideIndex, explainSlides]);
+
+  // Subscribe to per-user annotation layers for the active Explain Mode slide (when an image/PDF page is shown)
+  useEffect(() => {
+    if (!activeExplainSlide) {
+      setExplainSlideLayers([]);
+      setLocalSlideExplainStrokes([]);
+      return;
+    }
+    const slideId = activeExplainSlide.id;
+    const lPath = `rooms/${room.id}/slides/${slideId}/layers`;
+    const lRef = query(
+      collection(db, 'rooms', room.id, 'slides', slideId, 'layers'),
+      where('roomId', '==', room.id),
+      where('slideId', '==', slideId)
+    );
+    const unsub = onSnapshot(
+      lRef,
+      (snap) => {
+        const list: SlideLayer[] = [];
+        snap.forEach((d) => list.push(d.data() as SlideLayer));
+        setExplainSlideLayers(list);
+        const mine = list.find((l) => l.authorId === profile.uid);
+        const remoteStrokes = mine?.strokes ?? [];
+        if (remoteStrokes.length === 0 || Date.now() - lastExplainEditAtRef.current > 1200) {
+          setLocalSlideExplainStrokes(remoteStrokes);
+        }
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, lPath);
+      }
+    );
+    return () => unsub();
+  }, [room.id, activeExplainSlide?.id, profile.uid]);
+
+  useEffect(() => {
+    lastExplainEditAtRef.current = 0;
+    if (!activeExplainSlide) {
+      setLocalSlideExplainStrokes([]);
+      return;
+    }
+    const mine = explainSlideLayers.find(
+      (l) => l.slideId === activeExplainSlide.id && l.authorId === profile.uid
+    );
+    setLocalSlideExplainStrokes(mine?.strokes ?? []);
+  }, [activeExplainSlide?.id]);
+
+  // Subscribe to synchronized Explain Mode shared whiteboard (legacy single doc + blank board collaborative layers)
   useEffect(() => {
     const sbPath = `rooms/${room.id}/sharedBoard/live`;
     const sbRef = doc(db, 'rooms', room.id, 'sharedBoard', 'live');
@@ -226,7 +316,10 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
         snap.forEach((d) => list.push(d.data() as ExplainLayer));
         setExplainLayers(list);
         const mine = list.find((l) => l.id === profile.uid);
-        setLocalExplainStrokes(mine?.strokes ?? []);
+        const remoteStrokes = mine?.strokes ?? [];
+        if (remoteStrokes.length === 0 || Date.now() - lastExplainEditAtRef.current > 1200) {
+          setLocalExplainStrokes(remoteStrokes);
+        }
       },
       (err) => {
         handleFirestoreError(err, OperationType.LIST, elPath);
@@ -622,15 +715,19 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
     }
   };
 
+  const explainBlockedIds = room.explainBlockedIds ?? [];
+
   // Supervisor: assign who draws on the shared explain board ('all', supervisor UID, or a specific student UID)
   const handleSelectPresenter = async (presenterId: string, presenterName: string) => {
     if (!isSupervisor || explainBusy) return;
     setExplainBusy(true);
     try {
+      const nextBlocked = explainBlockedIds.filter((id) => id !== presenterId);
       await updateDoc(doc(db, 'rooms', room.id), {
         mode: 'explain',
         explainPresenterId: presenterId,
         explainPresenterName: presenterName,
+        explainBlockedIds: nextBlocked,
         updatedAt: serverTimestamp(),
       });
       playDuoSound('pop');
@@ -641,15 +738,81 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
     }
   };
 
-  // Collaborative per-user layer sync in Explain Mode (prevents overwriting strokes when supervisor & students write together)
+  // Supervisor: block or allow a specific student from writing in Explain Mode
+  const handleToggleBlockStudent = async (studentId: string) => {
+    if (!isSupervisor || explainBusy) return;
+    setExplainBusy(true);
+    const currentlyBlocked = explainBlockedIds.includes(studentId);
+    const nextBlocked = currentlyBlocked
+      ? explainBlockedIds.filter((id) => id !== studentId)
+      : Array.from(new Set([...explainBlockedIds, studentId]));
+
+    try {
+      if (!currentlyBlocked && room.explainPresenterId === studentId) {
+        await updateDoc(doc(db, 'rooms', room.id), {
+          mode: 'explain',
+          explainPresenterId: 'all',
+          explainPresenterName: 'الجميع (المشرف والطلاب)',
+          explainBlockedIds: nextBlocked,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await updateDoc(doc(db, 'rooms', room.id), {
+          explainBlockedIds: nextBlocked,
+          updatedAt: serverTimestamp(),
+        });
+      }
+      playDuoSound('pop');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `rooms/${room.id}`);
+    } finally {
+      setExplainBusy(false);
+    }
+  };
+
+  // Collaborative per-user layer sync in Explain Mode (works for blank board OR active PDF/image slide)
   const handleExplainLayerStrokesChange = async (nextStrokes: Stroke[]) => {
+    const isBlocked = !isSupervisor && explainBlockedIds.includes(profile.uid);
     const canDraw =
       isSupervisor ||
       (room.mode === 'explain' &&
+        !isBlocked &&
         (room.explainPresenterId === 'all' ||
           room.explainPresenterId === profile.uid ||
           !room.explainPresenterId));
     if (!canDraw) return;
+
+    lastExplainEditAtRef.current = Date.now();
+
+    if (activeExplainSlide) {
+      setLocalSlideExplainStrokes(nextStrokes);
+      const slideId = activeExplainSlide.id;
+      const layerPath = `rooms/${room.id}/slides/${slideId}/layers/${profile.uid}`;
+      const layerRef = doc(db, 'rooms', room.id, 'slides', slideId, 'layers', profile.uid);
+      const existingMine = explainSlideLayers.find((l) => l.authorId === profile.uid);
+
+      try {
+        if (!existingMine) {
+          await setDoc(layerRef, {
+            id: profile.uid,
+            roomId: room.id,
+            slideId,
+            authorId: profile.uid,
+            authorName: profile.fullNameQuad,
+            strokes: nextStrokes,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          await updateDoc(layerRef, {
+            strokes: nextStrokes,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, layerPath);
+      }
+      return;
+    }
 
     setLocalExplainStrokes(nextStrokes);
     const layerPath = `rooms/${room.id}/explainLayers/${profile.uid}`;
@@ -677,23 +840,155 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
     }
   };
 
-  // Supervisor: clear everyone's explain layers + legacy sharedBoard
+  // Supervisor: direct Eraser tool sweep erases ANY student's strokes on contact
+  const handleSupervisorEraserSweep = async (eraserStroke: Stroke) => {
+    if (!isSupervisor || !eraserStroke.isEraser) return;
+    const hitRadius = Math.max(eraserStroke.width * 2.4, 24) / 2 + 8;
+
+    try {
+      const batch = writeBatch(db);
+      let mutations = 0;
+
+      if (activeExplainSlide) {
+        for (const layer of explainSlideLayers) {
+          if (layer.authorId === profile.uid || !layer.strokes?.length) continue;
+          const kept = layer.strokes.filter(
+            (s) => !doesStrokeIntersectEraser(eraserStroke.pts, s.pts, hitRadius)
+          );
+          if (kept.length !== layer.strokes.length) {
+            batch.update(
+              doc(
+                db,
+                'rooms',
+                room.id,
+                'slides',
+                activeExplainSlide.id,
+                'layers',
+                layer.id
+              ),
+              {
+                strokes: kept,
+                updatedAt: serverTimestamp(),
+              }
+            );
+            mutations++;
+          }
+        }
+      } else {
+        for (const layer of explainLayers) {
+          if (layer.id === profile.uid || !layer.strokes?.length) continue;
+          const kept = layer.strokes.filter(
+            (s) => !doesStrokeIntersectEraser(eraserStroke.pts, s.pts, hitRadius)
+          );
+          if (kept.length !== layer.strokes.length) {
+            batch.update(doc(db, 'rooms', room.id, 'explainLayers', layer.id), {
+              strokes: kept,
+              updatedAt: serverTimestamp(),
+            });
+            mutations++;
+          }
+        }
+        if (sharedBoardExists && sharedStrokes.length > 0) {
+          const keptShared = sharedStrokes.filter(
+            (s) => !doesStrokeIntersectEraser(eraserStroke.pts, s.pts, hitRadius)
+          );
+          if (keptShared.length !== sharedStrokes.length) {
+            batch.update(doc(db, 'rooms', room.id, 'sharedBoard', 'live'), {
+              strokes: keptShared,
+              updatedBy: profile.uid,
+              updatedByName: profile.fullNameQuad,
+              updatedAt: serverTimestamp(),
+            });
+            mutations++;
+          }
+        }
+      }
+
+      if (mutations > 0) {
+        await batch.commit();
+      }
+    } catch (err) {
+      console.error('Supervisor eraser sweep error:', err);
+    }
+  };
+
+  // Supervisor: clear a specific person's writing (student or supervisor) on the active Explain board
+  const handleClearPersonExplain = async (targetUid: string) => {
+    if (!isSupervisor || explainBusy) return;
+    setExplainBusy(true);
+    try {
+      if (activeExplainSlide) {
+        if (targetUid === profile.uid) {
+          lastExplainEditAtRef.current = 0;
+          setLocalSlideExplainStrokes([]);
+        }
+        const targetLayer = explainSlideLayers.find((l) => l.authorId === targetUid);
+        if (targetLayer) {
+          await deleteDoc(
+            doc(
+              db,
+              'rooms',
+              room.id,
+              'slides',
+              activeExplainSlide.id,
+              'layers',
+              targetLayer.id
+            )
+          );
+        }
+      } else {
+        if (targetUid === profile.uid) {
+          lastExplainEditAtRef.current = 0;
+          setLocalExplainStrokes([]);
+        }
+        const targetLayer = explainLayers.find((l) => l.id === targetUid);
+        if (targetLayer) {
+          await deleteDoc(doc(db, 'rooms', room.id, 'explainLayers', targetLayer.id));
+        }
+      }
+      playDuoSound('pop');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `rooms/${room.id}/explainLayers`);
+    } finally {
+      setExplainBusy(false);
+    }
+  };
+
+  // Supervisor: clear everyone's strokes on the currently active Explain board/page
   const handleClearAllExplainBoard = async () => {
     if (!isSupervisor || explainBusy) return;
     setExplainBusy(true);
-    setLocalExplainStrokes([]);
+    lastExplainEditAtRef.current = 0;
     try {
       const batch = writeBatch(db);
-      for (const layer of explainLayers) {
-        batch.delete(doc(db, 'rooms', room.id, 'explainLayers', layer.id));
-      }
-      if (sharedBoardExists) {
-        batch.update(doc(db, 'rooms', room.id, 'sharedBoard', 'live'), {
-          strokes: [],
-          updatedBy: profile.uid,
-          updatedByName: profile.fullNameQuad,
-          updatedAt: serverTimestamp(),
-        });
+      if (activeExplainSlide) {
+        setLocalSlideExplainStrokes([]);
+        for (const layer of explainSlideLayers) {
+          batch.delete(
+            doc(
+              db,
+              'rooms',
+              room.id,
+              'slides',
+              activeExplainSlide.id,
+              'layers',
+              layer.id
+            )
+          );
+        }
+      } else {
+        setLocalExplainStrokes([]);
+        for (const layer of explainLayers) {
+          batch.delete(doc(db, 'rooms', room.id, 'explainLayers', layer.id));
+        }
+        if (sharedBoardExists) {
+          batch.update(doc(db, 'rooms', room.id, 'sharedBoard', 'live'), {
+            strokes: [],
+            updatedBy: profile.uid,
+            updatedByName: profile.fullNameQuad,
+            updatedAt: serverTimestamp(),
+          });
+        }
       }
       await batch.commit();
       playDuoSound('pop');
@@ -701,6 +996,165 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
       handleFirestoreError(err, OperationType.WRITE, `rooms/${room.id}/explainLayers`);
     } finally {
       setExplainBusy(false);
+    }
+  };
+
+  // Supervisor: upload Image or PDF onto the Explain Mode whiteboard
+  const handleExplainFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !isSupervisor) return;
+
+    setExplainUploadError(null);
+    setExplainUploading(true);
+    const shouldAppend = explainAppendModeRef.current && explainSlides.length > 0;
+
+    try {
+      let newImages: string[] = [];
+      const isPdf =
+        file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+
+      if (isPdf) {
+        setExplainUploadStatus('جاري قراءة صفحات ملف PDF...');
+        newImages = await renderPdfToSlideImages(
+          file,
+          (done, total) => {
+            setExplainUploadStatus(`جاري تجهيز الصفحة ${done} من ${total}...`);
+          },
+          25
+        );
+      } else if (file.type.startsWith('image/')) {
+        setExplainUploadStatus('جاري تجهيز الصورة للسبورة...');
+        const imgUrl = await compressSlideImageToDataUrl(file);
+        newImages = [imgUrl];
+      } else {
+        setExplainUploadError('يرجى اختيار صورة (PNG / JPG) أو ملف PDF صالح');
+        setExplainUploading(false);
+        return;
+      }
+
+      if (newImages.length === 0) {
+        setExplainUploadError('لم يتم العثور على صفحات قابلة للعرض في الملف');
+        setExplainUploading(false);
+        return;
+      }
+
+      const maxAllowed = shouldAppend ? Math.max(0, 100 - explainSlides.length) : 100;
+      const slicedImages = newImages.slice(0, maxAllowed);
+      if (slicedImages.length === 0) {
+        setExplainUploadError('تم الوصول للحد الأقصى (100 صفحة)');
+        setExplainUploading(false);
+        return;
+      }
+
+      if (!shouldAppend && explainSlides.length > 0) {
+        setExplainUploadStatus('جاري استبدال الشرائح السابقة...');
+        for (const oldSlide of explainSlides) {
+          const oldLayersSnap = await getDocs(
+            query(
+              collection(db, 'rooms', room.id, 'slides', oldSlide.id, 'layers'),
+              where('roomId', '==', room.id),
+              where('slideId', '==', oldSlide.id)
+            )
+          );
+          const delBatch = writeBatch(db);
+          oldLayersSnap.forEach((d) => delBatch.delete(d.ref));
+          delBatch.delete(doc(db, 'rooms', room.id, 'slides', oldSlide.id));
+          await delBatch.commit();
+        }
+      }
+
+      const startIndex = shouldAppend
+        ? Math.max(...explainSlides.map((s) => s.pageIndex), 0) + 1
+        : 1;
+      const batchStamp = Date.now();
+      const CHUNK_SIZE = 5;
+
+      for (let i = 0; i < slicedImages.length; i += CHUNK_SIZE) {
+        const chunk = slicedImages.slice(i, i + CHUNK_SIZE);
+        setExplainUploadStatus(
+          `جاري رفع الصفحات (${Math.min(i + chunk.length, slicedImages.length)} / ${slicedImages.length})...`
+        );
+        const batch = writeBatch(db);
+        chunk.forEach((imgData, offset) => {
+          const pageIndex = startIndex + i + offset;
+          const slideId = `ex_${batchStamp}_${pageIndex}`;
+          batch.set(doc(db, 'rooms', room.id, 'slides', slideId), {
+            id: slideId,
+            roomId: room.id,
+            pageIndex,
+            imageData: imgData,
+            createdAt: serverTimestamp(),
+          });
+        });
+        await batch.commit();
+      }
+
+      const nextCount = shouldAppend
+        ? explainSlides.length + slicedImages.length
+        : slicedImages.length;
+      const targetPage = shouldAppend ? startIndex : 1;
+
+      await updateDoc(doc(db, 'rooms', room.id), {
+        currentSlideIndex: targetPage,
+        slideCount: nextCount,
+        updatedAt: serverTimestamp(),
+      });
+      playDuoSound('correct');
+    } catch (err) {
+      console.error(err);
+      setExplainUploadError('تعذر رفع الصورة أو ملف PDF، يرجى المحاولة مرة أخرى');
+    } finally {
+      setExplainUploading(false);
+      setExplainUploadStatus('');
+    }
+  };
+
+  const handleExplainGoToPage = async (targetPage: number) => {
+    if (!isSupervisor || explainBusy) return;
+    const clamped =
+      targetPage <= 0 ? 0 : Math.max(1, Math.min(explainSlides.length, targetPage));
+    try {
+      await updateDoc(doc(db, 'rooms', room.id), {
+        currentSlideIndex: clamped,
+        slideCount: explainSlides.length,
+        updatedAt: serverTimestamp(),
+      });
+      playDuoSound('pop');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `rooms/${room.id}`);
+    }
+  };
+
+  const handleRemoveExplainSlides = async () => {
+    if (!isSupervisor || explainUploading || explainSlides.length === 0) return;
+    setExplainUploading(true);
+    setExplainUploadStatus('جاري إزالة صفحات الشرح والعودة للسبورة البيضاء...');
+    try {
+      for (const oldSlide of explainSlides) {
+        const oldLayersSnap = await getDocs(
+          query(
+            collection(db, 'rooms', room.id, 'slides', oldSlide.id, 'layers'),
+            where('roomId', '==', room.id),
+            where('slideId', '==', oldSlide.id)
+          )
+        );
+        const delBatch = writeBatch(db);
+        oldLayersSnap.forEach((d) => delBatch.delete(d.ref));
+        delBatch.delete(doc(db, 'rooms', room.id, 'slides', oldSlide.id));
+        await delBatch.commit();
+      }
+      await updateDoc(doc(db, 'rooms', room.id), {
+        currentSlideIndex: 0,
+        slideCount: 0,
+        updatedAt: serverTimestamp(),
+      });
+      playDuoSound('pop');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `rooms/${room.id}/slides`);
+    } finally {
+      setExplainUploading(false);
+      setExplainUploadStatus('');
     }
   };
 
@@ -941,17 +1395,28 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
   }, [studentLockedInfo.locked, currentQuestion?.id]);
 
   const isExplainMode = room.mode === 'explain';
+  const isAmIBlockedInExplain = !isSupervisor && explainBlockedIds.includes(profile.uid);
   const isExplainOpenToAll =
     room.explainPresenterId === 'all' || !room.explainPresenterId;
   const canDrawOnSharedBoard =
     isSupervisor ||
     (isExplainMode &&
+      !isAmIBlockedInExplain &&
       (isExplainOpenToAll || room.explainPresenterId === profile.uid));
   const currentPresenterName = isExplainOpenToAll
     ? 'الجميع (المشرف والطلاب معاً)'
     : room.explainPresenterName || room.supervisorName;
 
+  const activeExplainMineStrokes = activeExplainSlide
+    ? localSlideExplainStrokes
+    : localExplainStrokes;
+
   const otherExplainOverlayLayers = useMemo(() => {
+    if (activeExplainSlide) {
+      return explainSlideLayers
+        .filter((l) => l.authorId !== profile.uid && (l.strokes?.length ?? 0) > 0)
+        .map((l) => l.strokes);
+    }
     const layers = explainLayers
       .filter((l) => l.id !== profile.uid && (l.strokes?.length ?? 0) > 0)
       .map((l) => l.strokes);
@@ -959,12 +1424,32 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
       layers.unshift(sharedStrokes);
     }
     return layers;
-  }, [explainLayers, profile.uid, sharedStrokes]);
+  }, [activeExplainSlide, explainSlideLayers, explainLayers, profile.uid, sharedStrokes]);
 
-  const hasAnyExplainStrokes =
-    localExplainStrokes.length > 0 ||
-    sharedStrokes.length > 0 ||
-    explainLayers.some((l) => (l.strokes?.length ?? 0) > 0);
+  const activeExplainLayerWriters = useMemo(() => {
+    const map = new Map<string, number>();
+    if (activeExplainSlide) {
+      for (const l of explainSlideLayers) {
+        if ((l.strokes?.length ?? 0) > 0) {
+          map.set(l.authorId, l.strokes.length);
+        }
+      }
+    } else {
+      for (const l of explainLayers) {
+        if ((l.strokes?.length ?? 0) > 0) {
+          map.set(l.authorId, l.strokes.length);
+        }
+      }
+    }
+    return map;
+  }, [activeExplainSlide, explainSlideLayers, explainLayers]);
+
+  const hasAnyExplainStrokes = activeExplainSlide
+    ? localSlideExplainStrokes.length > 0 ||
+      explainSlideLayers.some((l) => (l.strokes?.length ?? 0) > 0)
+    : localExplainStrokes.length > 0 ||
+      sharedStrokes.length > 0 ||
+      explainLayers.some((l) => (l.strokes?.length ?? 0) > 0);
 
   const myParticipant = participants.find((p) => p.uid === profile.uid);
   const progressPercent = currentQuestion
@@ -1053,110 +1538,366 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
 
       {/* ==================== EXPLAIN MODE (SHARED SYNCHRONIZED BOARD) ==================== */}
       {isExplainMode ? (
-        <div className="flex flex-col gap-5">
-          {/* Explain Mode Status & Presenter Assignment Card */}
-          <div className="duo-card p-5 sm:p-6 bg-[#DDF4FF]/45 border-[#1CB0F6] flex flex-col gap-4">
-            <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex flex-col gap-4 sm:gap-5">
+          {/* Hidden Upload Input for Supervisor (Image or PDF) */}
+          {isSupervisor && (
+            <input
+              ref={explainFileInputRef}
+              type="file"
+              accept="application/pdf,image/*"
+              onChange={handleExplainFileSelected}
+              className="hidden"
+            />
+          )}
+
+          {/* Explain Mode Status, PDF/Image Controls & Per-Student Permissions Card */}
+          <div className="duo-card p-4 sm:p-6 bg-[#DDF4FF]/45 border-[#1CB0F6] flex flex-col gap-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-3">
                 <div className="w-11 h-11 rounded-2xl bg-[#1CB0F6] text-white flex items-center justify-center shrink-0">
                   <Presentation className="w-6 h-6" />
                 </div>
                 <div>
                   <span className="text-xs font-extrabold text-[#1899D6] block">
-                    السبورة الجماعية المتزامنة للجميع
+                    صبورة الشرح التفاعلية المتزامنة للجميع
                   </span>
-                  <h2 className="text-xl font-black text-[#3C3C3C]">
+                  <h2 className="text-lg sm:text-xl font-black text-[#3C3C3C]">
                     يشرح الآن: {currentPresenterName}
                   </h2>
                 </div>
               </div>
 
-              {!isSupervisor && canDrawOnSharedBoard && (
-                <span className="px-4 py-2 rounded-xl bg-[#D7FFB8] border-2 border-[#58CC02] text-[#46A302] text-xs sm:text-sm font-black">
-                  {isExplainOpenToAll
-                    ? 'السبورة مفتوحة للجميع — يمكنك الكتابة والرسم مع المشرف والطلاب مباشرة!'
-                    : 'أنت تملك القلم الآن — ارسم وسيظهر شرحك للجميع'}
-                </span>
+              {!isSupervisor && (
+                isAmIBlockedInExplain ? (
+                  <span className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#FFDFE0] border-2 border-[#FF4B4B] text-[#EA2B2B] text-xs sm:text-sm font-black">
+                    <Lock className="w-4 h-4 shrink-0" />
+                    <span>أوقف المشرف الكتابة عنك مؤقتاً — يمكنك المشاهدة والتكبير</span>
+                  </span>
+                ) : canDrawOnSharedBoard ? (
+                  <span className="px-4 py-2 rounded-xl bg-[#D7FFB8] border-2 border-[#58CC02] text-[#46A302] text-xs sm:text-sm font-black">
+                    {isExplainOpenToAll
+                      ? 'السبورة مفتوحة للجميع — يمكنك الكتابة والرسم مع المشرف والطلاب!'
+                      : 'أنت تملك القلم الآن — ارسم وسيظهر شرحك للجميع'}
+                  </span>
+                ) : (
+                  <span className="px-4 py-2 rounded-xl bg-white border-2 border-[#E5E5E5] text-[#777777] text-xs sm:text-sm font-black">
+                    الكتابة مقتصرة حالياً على {currentPresenterName}
+                  </span>
+                )
               )}
 
-              {isSupervisor && hasAnyExplainStrokes && (
-                <button
-                  type="button"
-                  disabled={explainBusy}
-                  onClick={() => void handleClearAllExplainBoard()}
-                  className="duo-btn flex items-center gap-1.5 px-4 py-2 rounded-xl bg-white border-2 border-b-4 border-[#E5E5E5] text-xs font-black text-[#EA2B2B] hover:bg-[#FFDFE0] cursor-pointer disabled:opacity-60"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  <span>مسح سبورة الشرح للجميع</span>
-                </button>
-              )}
-            </div>
-
-            {/* Supervisor Presenter Picker (All together, Supervisor only, or Specific Student) */}
-            {isSupervisor && (
-              <div className="pt-3 border-t-2 border-[#BCE8FF] flex flex-col gap-2.5">
-                <div className="flex items-center gap-2 text-xs font-extrabold text-[#1899D6]">
-                  <Users className="w-4 h-4" />
-                  <span>صلاحية الكتابة على سبورة الشرح الجماعية:</span>
-                </div>
+              {isSupervisor && (
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    disabled={explainBusy}
-                    onClick={() =>
-                      handleSelectPresenter('all', 'الجميع (المشرف والطلاب)')
-                    }
-                    className={`duo-btn px-4 py-2 rounded-xl border-2 border-b-4 text-xs font-black cursor-pointer whitespace-nowrap ${
-                      isExplainOpenToAll
-                        ? 'bg-[#58CC02] border-[#46A302] text-white'
-                        : 'bg-white border-[#E5E5E5] text-[#3C3C3C] hover:bg-[#F7F7F7]'
-                    }`}
+                    disabled={explainUploading}
+                    onClick={() => {
+                      explainAppendModeRef.current = false;
+                      explainFileInputRef.current?.click();
+                    }}
+                    className="duo-btn flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#FFC800] hover:bg-[#FFD324] border-2 border-b-4 border-[#E5A400] text-xs font-black text-[#3C3C3C] cursor-pointer disabled:opacity-60"
                   >
-                    الجميع (المشرف + الطلاب)
+                    <Upload className="w-4 h-4" />
+                    <span>
+                      {explainSlides.length > 0 ? 'تغيير الصورة / PDF' : 'رفع صورة أو PDF'}
+                    </span>
                   </button>
 
-                  <button
-                    type="button"
-                    disabled={explainBusy}
-                    onClick={() => handleSelectPresenter(profile.uid, profile.fullNameQuad)}
-                    className={`duo-btn px-4 py-2 rounded-xl border-2 border-b-4 text-xs font-black cursor-pointer whitespace-nowrap ${
-                      room.explainPresenterId === profile.uid
-                        ? 'bg-[#1CB0F6] border-[#1899D6] text-white'
-                        : 'bg-white border-[#E5E5E5] text-[#3C3C3C] hover:bg-[#F7F7F7]'
-                    }`}
-                  >
-                    المشرف فقط
-                  </button>
+                  {explainSlides.length > 0 && (
+                    <button
+                      type="button"
+                      disabled={explainUploading}
+                      onClick={() => {
+                        explainAppendModeRef.current = true;
+                        explainFileInputRef.current?.click();
+                      }}
+                      className="duo-btn flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border-2 border-b-4 border-[#1CB0F6] text-xs font-black text-[#1899D6] hover:bg-[#DDF4FF] cursor-pointer disabled:opacity-60"
+                    >
+                      <FilePlus2 className="w-4 h-4" />
+                      <span>إضافة صفحات</span>
+                    </button>
+                  )}
 
-                  {participants.map((p) => {
-                    const active = room.explainPresenterId === p.uid;
-                    return (
+                  {hasAnyExplainStrokes && (
+                    <button
+                      type="button"
+                      disabled={explainBusy}
+                      onClick={() => void handleClearAllExplainBoard()}
+                      className="duo-btn flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border-2 border-b-4 border-[#E5E5E5] text-xs font-black text-[#EA2B2B] hover:bg-[#FFDFE0] cursor-pointer disabled:opacity-60"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      <span>مسح السبورة للجميع</span>
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Supervisor Upload Progress / Error */}
+            {explainUploading && (
+              <div className="p-3 rounded-xl bg-[#FFF4CC] border-2 border-[#FFC800] text-xs sm:text-sm font-black text-[#9A6B00] flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                <span>{explainUploadStatus || 'جاري تجهيز الملف...'}</span>
+              </div>
+            )}
+            {explainUploadError && (
+              <div className="p-3 rounded-xl bg-[#FFDFE0] border-2 border-[#FF4B4B] text-xs sm:text-sm font-extrabold text-[#EA2B2B]">
+                {explainUploadError}
+              </div>
+            )}
+
+            {/* Uploaded Image / PDF Page Navigation Strip in Explain Mode */}
+            {explainSlides.length > 0 && (
+              <div className="pt-3 border-t-2 border-[#BCE8FF] flex flex-wrap items-center justify-between gap-2.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="flex items-center gap-1.5 text-xs font-black text-[#1899D6]">
+                    <FileText className="w-4 h-4" />
+                    <span>
+                      {activeExplainSlide
+                        ? `صفحة ${activeExplainSlide.pageIndex} من ${explainSlides.length}`
+                        : `السبورة البيضاء (${explainSlides.length} صفحة محفوظة)`}
+                    </span>
+                  </span>
+
+                  {isSupervisor && (
+                    <div className="flex items-center gap-1.5">
                       <button
-                        key={p.uid}
+                        type="button"
+                        disabled={!activeExplainSlide || activeExplainSlide.pageIndex <= 1}
+                        onClick={() =>
+                          void handleExplainGoToPage((activeExplainSlide?.pageIndex ?? 2) - 1)
+                        }
+                        className="duo-btn flex items-center gap-1 px-2.5 py-1 rounded-xl bg-white border-2 border-b-3 border-[#E5E5E5] text-xs font-black text-[#3C3C3C] cursor-pointer disabled:opacity-40"
+                      >
+                        <ChevronRight className="w-3.5 h-3.5" />
+                        <span>السابقة</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={
+                          explainSlideIndex >= explainSlides.length
+                        }
+                        onClick={() =>
+                          void handleExplainGoToPage(
+                            activeExplainSlide ? activeExplainSlide.pageIndex + 1 : 1
+                          )
+                        }
+                        className="duo-btn flex items-center gap-1 px-2.5 py-1 rounded-xl bg-white border-2 border-b-3 border-[#E5E5E5] text-xs font-black text-[#3C3C3C] cursor-pointer disabled:opacity-40"
+                      >
+                        <span>التالية</span>
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {isSupervisor && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => void handleExplainGoToPage(0)}
+                      className={`duo-btn px-2.5 py-1 rounded-xl border-2 text-xs font-black cursor-pointer ${
+                        explainSlideIndex === 0
+                          ? 'bg-[#58CC02] border-[#46A302] text-white'
+                          : 'bg-white border-[#E5E5E5] text-[#3C3C3C]'
+                      }`}
+                    >
+                      سبورة بيضاء
+                    </button>
+
+                    <div className="flex items-center gap-1 overflow-x-auto max-w-full">
+                      {explainSlides.map((s) => (
+                        <button
+                          key={s.id}
+                          type="button"
+                          onClick={() => void handleExplainGoToPage(s.pageIndex)}
+                          className={`font-latin min-w-[28px] h-7 px-2 rounded-lg text-xs font-black cursor-pointer shrink-0 ${
+                            explainSlideIndex === s.pageIndex
+                              ? 'bg-[#1CB0F6] text-white border-2 border-[#1899D6]'
+                              : 'bg-white text-[#777777] border border-[#E5E5E5] hover:text-[#3C3C3C]'
+                          }`}
+                        >
+                          {s.pageIndex}
+                        </button>
+                      ))}
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={explainUploading}
+                      onClick={() => void handleRemoveExplainSlides()}
+                      className="duo-btn px-2.5 py-1 rounded-xl bg-white border-2 border-[#E5E5E5] text-xs font-black text-[#EA2B2B] hover:bg-[#FFDFE0] cursor-pointer"
+                      title="إزالة الصور والملف بالكامل"
+                    >
+                      إزالة الملف
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Supervisor Global & Per-Person Controls (Allow/Block writing + Erase anyone's strokes) */}
+            {isSupervisor && (
+              <div className="pt-3 border-t-2 border-[#BCE8FF] flex flex-col gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs font-extrabold text-[#1899D6]">
+                    <Users className="w-4 h-4" />
+                    <span>التحكم بالكتابة والمسح لكل شخص (أو استخدم المسّاحة مباشرة على خط أي طالب):</span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={explainBusy}
+                      onClick={() =>
+                        handleSelectPresenter('all', 'الجميع (المشرف والطلاب)')
+                      }
+                      className={`duo-btn px-3.5 py-1.5 rounded-xl border-2 border-b-3 text-xs font-black cursor-pointer whitespace-nowrap ${
+                        isExplainOpenToAll
+                          ? 'bg-[#58CC02] border-[#46A302] text-white'
+                          : 'bg-white border-[#E5E5E5] text-[#3C3C3C] hover:bg-[#F7F7F7]'
+                      }`}
+                    >
+                      الجميع يكتب
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={explainBusy}
+                      onClick={() => handleSelectPresenter(profile.uid, profile.fullNameQuad)}
+                      className={`duo-btn px-3.5 py-1.5 rounded-xl border-2 border-b-3 text-xs font-black cursor-pointer whitespace-nowrap ${
+                        room.explainPresenterId === profile.uid
+                          ? 'bg-[#1CB0F6] border-[#1899D6] text-white'
+                          : 'bg-white border-[#E5E5E5] text-[#3C3C3C] hover:bg-[#F7F7F7]'
+                      }`}
+                    >
+                      المشرف فقط يكتب
+                    </button>
+
+                    {activeExplainLayerWriters.has(profile.uid) && (
+                      <button
                         type="button"
                         disabled={explainBusy}
-                        onClick={() => handleSelectPresenter(p.uid, p.fullNameQuad)}
-                        className={`duo-btn px-4 py-2 rounded-xl border-2 border-b-4 text-xs font-black cursor-pointer whitespace-nowrap ${
-                          active
-                            ? 'bg-[#FFC800] border-[#E5A400] text-[#3C3C3C]'
-                            : 'bg-white border-[#E5E5E5] text-[#3C3C3C] hover:bg-[#F7F7F7]'
-                        }`}
+                        onClick={() => void handleClearPersonExplain(profile.uid)}
+                        className="duo-btn flex items-center gap-1 px-3 py-1.5 rounded-xl bg-white border-2 border-b-3 border-[#E5E5E5] text-xs font-black text-[#EA2B2B] hover:bg-[#FFDFE0] cursor-pointer"
                       >
-                        {p.fullNameQuad}
+                        <Eraser className="w-3.5 h-3.5" />
+                        <span>مسح خط المشرف</span>
                       </button>
-                    );
-                  })}
+                    )}
+                  </div>
                 </div>
+
+                {/* Per-Student Rows: Block/Allow Writing, Exclusive Pen, and Erase Specific Person's Writing */}
+                {participants.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {participants.map((p) => {
+                      const isExclusive = room.explainPresenterId === p.uid;
+                      const isBlocked = explainBlockedIds.includes(p.uid);
+                      const strokeCount = activeExplainLayerWriters.get(p.uid) ?? 0;
+
+                      return (
+                        <div
+                          key={p.uid}
+                          className={`flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-xl border-2 bg-white ${
+                            isBlocked
+                              ? 'border-[#FF4B4B]/60 bg-[#FFDFE0]/30'
+                              : isExclusive
+                              ? 'border-[#FFC800] bg-[#FFF4CC]/35'
+                              : 'border-[#E5E5E5]'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-xs sm:text-sm font-black text-[#3C3C3C] truncate max-w-[160px]">
+                              {p.fullNameQuad}
+                            </span>
+                            {strokeCount > 0 && (
+                              <span className="font-latin px-2 py-0.5 rounded-lg bg-[#DDF4FF] text-[#1899D6] text-[10px] font-black shrink-0">
+                                {strokeCount} خط
+                              </span>
+                            )}
+                            {isBlocked && (
+                              <span className="px-2 py-0.5 rounded-lg bg-[#FFDFE0] text-[#EA2B2B] text-[10px] font-black shrink-0">
+                                ممنوع من الكتابة
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              disabled={explainBusy}
+                              onClick={() => void handleToggleBlockStudent(p.uid)}
+                              title={isBlocked ? 'السماح له بالكتابة' : 'منعه من الكتابة'}
+                              className={`duo-btn flex items-center gap-1 px-2.5 py-1 rounded-lg border text-[11px] font-black cursor-pointer ${
+                                isBlocked
+                                  ? 'bg-[#58CC02] border-[#46A302] text-white'
+                                  : 'bg-[#FFDFE0] border-[#FF4B4B] text-[#EA2B2B] hover:bg-[#FFC7C9]'
+                              }`}
+                            >
+                              {isBlocked ? (
+                                <>
+                                  <Unlock className="w-3 h-3" />
+                                  <span>السماح</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Ban className="w-3 h-3" />
+                                  <span>منع الكتابة</span>
+                                </>
+                              )}
+                            </button>
+
+                            <button
+                              type="button"
+                              disabled={explainBusy}
+                              onClick={() => handleSelectPresenter(p.uid, p.fullNameQuad)}
+                              className={`duo-btn px-2.5 py-1 rounded-lg border text-[11px] font-black cursor-pointer ${
+                                isExclusive
+                                  ? 'bg-[#FFC800] border-[#E5A400] text-[#3C3C3C]'
+                                  : 'bg-[#F7F7F7] border-[#E5E5E5] text-[#3C3C3C] hover:bg-[#FFF4CC]'
+                              }`}
+                            >
+                              {isExclusive ? 'يشرح الآن' : 'القلم له'}
+                            </button>
+
+                            <button
+                              type="button"
+                              disabled={explainBusy || strokeCount === 0}
+                              onClick={() => void handleClearPersonExplain(p.uid)}
+                              title="مسح كتابة هذا الشخص"
+                              className="duo-btn flex items-center gap-1 px-2.5 py-1 rounded-lg border border-[#E5E5E5] bg-white text-[11px] font-black text-[#EA2B2B] hover:bg-[#FFDFE0] cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed"
+                            >
+                              <Eraser className="w-3 h-3" />
+                              <span>مسح خطه</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>
 
-          {/* Synchronized Explain Whiteboard (Collaborative multi-layer) */}
+          {/* Synchronized Explain Whiteboard (Collaborative multi-layer + optional Image/PDF background) */}
           <WhiteboardCanvas
-            strokes={localExplainStrokes}
+            strokes={activeExplainMineStrokes}
+            backgroundImage={activeExplainSlide?.imageData || undefined}
             overlayStrokeLayers={otherExplainOverlayLayers}
             onStrokesChange={(next) => void handleExplainLayerStrokesChange(next)}
+            onEraserSweep={
+              isSupervisor
+                ? (eraserStroke) => void handleSupervisorEraserSweep(eraserStroke)
+                : undefined
+            }
             viewOnly={!canDrawOnSharedBoard}
+            viewOnlyLabel={
+              isAmIBlockedInExplain
+                ? 'أوقف المشرف الكتابة عنك مؤقتاً — يمكنك المشاهدة والتكبير فقط'
+                : 'وضع المشاهدة المباشرة — يمكنك التكبير أو التحريك لمتابعة الشرح'
+            }
             syncIntervalMs={220}
             heightClass="h-[320px] sm:h-[460px] md:h-[560px]"
           />

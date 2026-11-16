@@ -27,6 +27,7 @@ export interface Room {
   mode?: RoomMode;
   explainPresenterId?: string;
   explainPresenterName?: string;
+  explainBlockedIds?: string[];
   interactiveEditor?: string;
   interactiveEditorName?: string;
   currentSlideIndex?: number;

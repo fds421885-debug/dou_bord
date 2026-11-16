@@ -79,6 +79,10 @@
           "type": "string",
           "maxLength": 120
         },
+        "explainBlockedIds": {
+          "type": "array",
+          "description": "List of participant UIDs blocked by the supervisor from writing on the Explain Mode board"
+        },
         "interactiveEditor": {
           "type": "string",
           "maxLength": 128

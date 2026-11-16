@@ -94,6 +94,114 @@ export function renderStrokesToDataUrl(strokes: Stroke[]): string {
   return canvas.toDataURL('image/jpeg', 0.78);
 }
 
+function distToSegmentSq(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number
+): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) {
+    const ex = px - ax;
+    const ey = py - ay;
+    return ex * ex + ey * ey;
+  }
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq));
+  const projX = ax + t * dx;
+  const projY = ay + t * dy;
+  const rx = px - projX;
+  const ry = py - projY;
+  return rx * rx + ry * ry;
+}
+
+export function doesStrokeIntersectEraser(
+  eraserPts: number[],
+  targetPts: number[],
+  hitRadius: number
+): boolean {
+  if (eraserPts.length < 2 || targetPts.length < 2) return false;
+  const rSq = hitRadius * hitRadius;
+
+  // Quick bounding-box reject
+  let eMinX = Infinity, eMaxX = -Infinity, eMinY = Infinity, eMaxY = -Infinity;
+  for (let i = 0; i < eraserPts.length; i += 2) {
+    const x = eraserPts[i];
+    const y = eraserPts[i + 1];
+    if (x < eMinX) eMinX = x;
+    if (x > eMaxX) eMaxX = x;
+    if (y < eMinY) eMinY = y;
+    if (y > eMaxY) eMaxY = y;
+  }
+  let tMinX = Infinity, tMaxX = -Infinity, tMinY = Infinity, tMaxY = -Infinity;
+  for (let i = 0; i < targetPts.length; i += 2) {
+    const x = targetPts[i];
+    const y = targetPts[i + 1];
+    if (x < tMinX) tMinX = x;
+    if (x > tMaxX) tMaxX = x;
+    if (y < tMinY) tMinY = y;
+    if (y > tMaxY) tMaxY = y;
+  }
+  if (
+    eMaxX + hitRadius < tMinX ||
+    eMinX - hitRadius > tMaxX ||
+    eMaxY + hitRadius < tMinY ||
+    eMinY - hitRadius > tMaxY
+  ) {
+    return false;
+  }
+
+  for (let i = 0; i < eraserPts.length; i += 2) {
+    const ex = eraserPts[i];
+    const ey = eraserPts[i + 1];
+    if (targetPts.length === 2) {
+      const dx = ex - targetPts[0];
+      const dy = ey - targetPts[1];
+      if (dx * dx + dy * dy <= rSq) return true;
+    } else {
+      for (let j = 2; j < targetPts.length; j += 2) {
+        if (
+          distToSegmentSq(
+            ex,
+            ey,
+            targetPts[j - 2],
+            targetPts[j - 1],
+            targetPts[j],
+            targetPts[j + 1]
+          ) <= rSq
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+
+  for (let j = 0; j < targetPts.length; j += 2) {
+    const tx = targetPts[j];
+    const ty = targetPts[j + 1];
+    if (eraserPts.length >= 4) {
+      for (let i = 2; i < eraserPts.length; i += 2) {
+        if (
+          distToSegmentSq(
+            tx,
+            ty,
+            eraserPts[i - 2],
+            eraserPts[i - 1],
+            eraserPts[i],
+            eraserPts[i + 1]
+          ) <= rSq
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 export const WhiteboardPreview: React.FC<{
   strokes: Stroke[];
   backgroundImage?: string;
@@ -142,10 +250,12 @@ export const WhiteboardPreview: React.FC<{
 interface WhiteboardCanvasProps {
   strokes: Stroke[];
   onStrokesChange: (next: Stroke[]) => void;
+  onEraserSweep?: (eraserStroke: Stroke) => void;
   backgroundImage?: string;
   overlayStrokeLayers?: Stroke[][];
   disabled?: boolean;
   viewOnly?: boolean;
+  viewOnlyLabel?: string;
   syncIntervalMs?: number;
   lockTitle?: string;
   lockSubtitle?: string;
@@ -155,10 +265,12 @@ interface WhiteboardCanvasProps {
 export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   strokes,
   onStrokesChange,
+  onEraserSweep,
   backgroundImage,
   overlayStrokeLayers = [],
   disabled = false,
   viewOnly = false,
+  viewOnlyLabel,
   syncIntervalMs = 550,
   lockTitle = 'السبورة مقفلة حالياً',
   lockSubtitle = 'بانتظار المشرف لإدراج السؤال',
@@ -377,7 +489,11 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     const now = Date.now();
     if (now - lastSyncRef.current > syncIntervalMs) {
       lastSyncRef.current = now;
-      const snapshot = [...localStrokesRef.current, { ...activeStrokeRef.current, pts: [...pts] }];
+      const strokeCopy = { ...activeStrokeRef.current, pts: [...pts] };
+      if (strokeCopy.isEraser && onEraserSweep) {
+        onEraserSweep(strokeCopy);
+      }
+      const snapshot = [...localStrokesRef.current, strokeCopy];
       onStrokesChange(snapshot.slice(-380));
     }
   };
@@ -396,6 +512,9 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     isDrawingRef.current = false;
     const finished = activeStrokeRef.current;
     activeStrokeRef.current = null;
+    if (finished.isEraser && onEraserSweep) {
+      onEraserSweep(finished);
+    }
     const next = [...localStrokesRef.current, finished].slice(-380);
     localStrokesRef.current = next;
     redraw();
@@ -437,7 +556,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       <div className="flex flex-wrap items-center justify-between gap-2 bg-[#F7F7F7] border-2 border-[#E5E5E5] rounded-2xl p-2 sm:p-2.5">
         {viewOnly ? (
           <div className="flex items-center gap-2 px-2 py-1 text-[11px] sm:text-xs font-black text-[#1899D6]">
-            <span>وضع المشاهدة المباشرة — يمكنك التكبير أو التحريك لمتابعة الشرح</span>
+            <span>{viewOnlyLabel || 'وضع المشاهدة المباشرة — يمكنك التكبير أو التحريك لمتابعة الشرح'}</span>
           </div>
         ) : (
         /* Colors & Tools */

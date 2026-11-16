@@ -30,6 +30,10 @@ service cloud.firestore {
       return isVerified() && request.auth.uid == userId;
     }
 
+    function isNotExplainBlocked(roomData) {
+      return !('explainBlockedIds' in roomData) || !(request.auth.uid in roomData.explainBlockedIds);
+    }
+
     function isValidUserProfile(data) {
       return data.keys().hasAll(['uid', 'fullNameQuad', 'email', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly(['uid', 'fullNameQuad', 'email', 'createdAt', 'updatedAt'])
@@ -50,7 +54,7 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'id', 'title', 'supervisorId', 'supervisorName', 'status',
-          'sessionType', 'mode', 'explainPresenterId', 'explainPresenterName',
+          'sessionType', 'mode', 'explainPresenterId', 'explainPresenterName', 'explainBlockedIds',
           'interactiveEditor', 'interactiveEditorName', 'currentSlideIndex', 'slideCount',
           'currentQuestionId', 'questionCount', 'createdAt', 'updatedAt'
         ])
@@ -63,6 +67,11 @@ service cloud.firestore {
         && data.mode in ['quiz', 'explain']
         && data.explainPresenterId is string && data.explainPresenterId.size() <= 128
         && data.explainPresenterName is string && data.explainPresenterName.size() <= 120
+        && (!('explainBlockedIds' in data) || (
+          data.explainBlockedIds is list
+          && data.explainBlockedIds.size() <= 100
+          && (data.explainBlockedIds.size() == 0 || isValidId(data.explainBlockedIds[0]))
+        ))
         && data.interactiveEditor is string && data.interactiveEditor.size() >= 1 && data.interactiveEditor.size() <= 128
         && data.interactiveEditorName is string && data.interactiveEditorName.size() >= 1 && data.interactiveEditorName.size() <= 120
         && data.currentSlideIndex is int && data.currentSlideIndex >= 0 && data.currentSlideIndex <= 100
@@ -312,6 +321,10 @@ service cloud.firestore {
           || (existing().status == 'active'
             && incoming().diff(existing()).affectedKeys().hasOnly(['mode', 'explainPresenterId', 'explainPresenterName', 'updatedAt']))
           || (existing().status == 'active'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['mode', 'explainPresenterId', 'explainPresenterName', 'explainBlockedIds', 'updatedAt']))
+          || (existing().status == 'active'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['explainBlockedIds', 'updatedAt']))
+          || (existing().status == 'active'
             && incoming().diff(existing()).affectedKeys().hasOnly(['currentSlideIndex', 'slideCount', 'updatedAt']))
           || (existing().status == 'active'
             && incoming().diff(existing()).affectedKeys().hasOnly(['interactiveEditor', 'interactiveEditorName', 'updatedAt']))
@@ -332,8 +345,11 @@ service cloud.firestore {
           && incoming().roomId == roomId
           && incoming().createdAt == request.time
           && get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
-          && get(/databases/$(database)/documents/rooms/$(roomId)).data.sessionType == 'interactive'
-          && get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'active';
+          && get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'active'
+          && (
+            get(/databases/$(database)/documents/rooms/$(roomId)).data.sessionType == 'interactive'
+            || get(/databases/$(database)/documents/rooms/$(roomId)).data.mode == 'explain'
+          );
         allow delete: if isValidId(roomId) && isValidId(slideId) && isVerified()
           && get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
           && get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'active';
@@ -356,14 +372,26 @@ service cloud.firestore {
             && incoming().updatedAt == request.time
             && exists(/databases/$(database)/documents/rooms/$(roomId)/slides/$(slideId))
             && get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'active'
-            && get(/databases/$(database)/documents/rooms/$(roomId)).data.sessionType == 'interactive'
             && (
               get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
               || (
                 exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid))
                 && (
-                  get(/databases/$(database)/documents/rooms/$(roomId)).data.interactiveEditor == 'all'
-                  || get(/databases/$(database)/documents/rooms/$(roomId)).data.interactiveEditor == request.auth.uid
+                  (
+                    get(/databases/$(database)/documents/rooms/$(roomId)).data.sessionType == 'interactive'
+                    && (
+                      get(/databases/$(database)/documents/rooms/$(roomId)).data.interactiveEditor == 'all'
+                      || get(/databases/$(database)/documents/rooms/$(roomId)).data.interactiveEditor == request.auth.uid
+                    )
+                  )
+                  || (
+                    get(/databases/$(database)/documents/rooms/$(roomId)).data.mode == 'explain'
+                    && isNotExplainBlocked(get(/databases/$(database)/documents/rooms/$(roomId)).data)
+                    && (
+                      get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == 'all'
+                      || get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == request.auth.uid
+                    )
+                  )
                 )
               )
             );
@@ -376,7 +404,6 @@ service cloud.firestore {
             && incoming().authorName == existing().authorName
             && incoming().updatedAt == request.time
             && get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'active'
-            && get(/databases/$(database)/documents/rooms/$(roomId)).data.sessionType == 'interactive'
             && incoming().diff(existing()).affectedKeys().hasOnly(['strokes', 'updatedAt'])
             && (
               get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
@@ -384,8 +411,21 @@ service cloud.firestore {
                 layerId == request.auth.uid
                 && exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid))
                 && (
-                  get(/databases/$(database)/documents/rooms/$(roomId)).data.interactiveEditor == 'all'
-                  || get(/databases/$(database)/documents/rooms/$(roomId)).data.interactiveEditor == request.auth.uid
+                  (
+                    get(/databases/$(database)/documents/rooms/$(roomId)).data.sessionType == 'interactive'
+                    && (
+                      get(/databases/$(database)/documents/rooms/$(roomId)).data.interactiveEditor == 'all'
+                      || get(/databases/$(database)/documents/rooms/$(roomId)).data.interactiveEditor == request.auth.uid
+                    )
+                  )
+                  || (
+                    get(/databases/$(database)/documents/rooms/$(roomId)).data.mode == 'explain'
+                    && isNotExplainBlocked(get(/databases/$(database)/documents/rooms/$(roomId)).data)
+                    && (
+                      get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == 'all'
+                      || get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == request.auth.uid
+                    )
+                  )
                 )
               )
             );
@@ -413,6 +453,7 @@ service cloud.firestore {
             get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
             || (
               get(/databases/$(database)/documents/rooms/$(roomId)).data.mode == 'explain'
+              && isNotExplainBlocked(get(/databases/$(database)/documents/rooms/$(roomId)).data)
               && (
                 get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == 'all'
                 || get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == request.auth.uid
@@ -430,6 +471,7 @@ service cloud.firestore {
             get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
             || (
               get(/databases/$(database)/documents/rooms/$(roomId)).data.mode == 'explain'
+              && isNotExplainBlocked(get(/databases/$(database)/documents/rooms/$(roomId)).data)
               && (
                 get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == 'all'
                 || get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == request.auth.uid
@@ -460,6 +502,7 @@ service cloud.firestore {
             get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
             || (
               exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid))
+              && isNotExplainBlocked(get(/databases/$(database)/documents/rooms/$(roomId)).data)
               && (
                 get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == 'all'
                 || get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == request.auth.uid
@@ -481,6 +524,7 @@ service cloud.firestore {
             || (
               layerId == request.auth.uid
               && exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid))
+              && isNotExplainBlocked(get(/databases/$(database)/documents/rooms/$(roomId)).data)
               && (
                 get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == 'all'
                 || get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == request.auth.uid
