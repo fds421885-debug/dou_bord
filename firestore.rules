@@ -89,6 +89,18 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidExplainLayer(data) {
+      return data.keys().hasAll(['id', 'roomId', 'authorId', 'authorName', 'strokes', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'roomId', 'authorId', 'authorName', 'strokes', 'updatedAt'])
+        && isValidId(data.id)
+        && isValidId(data.roomId)
+        && isValidId(data.authorId)
+        && data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 120
+        && data.strokes is list && data.strokes.size() <= 400
+        && (data.strokes.size() == 0 || data.strokes[0] is map)
+        && data.updatedAt is timestamp;
+    }
+
     function isValidSlide(data) {
       return data.keys().hasAll(['id', 'roomId', 'pageIndex', 'imageData', 'createdAt'])
         && data.keys().hasOnly(['id', 'roomId', 'pageIndex', 'imageData', 'createdAt'])
@@ -135,7 +147,7 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'id', 'roomId', 'orderIndex', 'text', 'imageData', 'status',
-          'attemptsUsed', 'wrongStudentIds', 'winnerId', 'winnerName', 'createdAt', 'updatedAt'
+          'attemptsUsed', 'wrongStudentIds', 'winnerId', 'winnerName', 'timerSeconds', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.id)
         && isValidId(data.roomId)
@@ -149,6 +161,7 @@ service cloud.firestore {
         && (data.wrongStudentIds.size() < 2 || (data.wrongStudentIds[1] is string && data.wrongStudentIds[1].size() <= 128))
         && data.winnerId is string && data.winnerId.size() <= 128
         && data.winnerName is string && data.winnerName.size() <= 120
+        && (!('timerSeconds' in data) || (data.timerSeconds is int && data.timerSeconds >= 0 && data.timerSeconds <= 3600))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -400,7 +413,10 @@ service cloud.firestore {
             get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
             || (
               get(/databases/$(database)/documents/rooms/$(roomId)).data.mode == 'explain'
-              && get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == request.auth.uid
+              && (
+                get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == 'all'
+                || get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == request.auth.uid
+              )
               && exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid))
             )
           );
@@ -414,11 +430,68 @@ service cloud.firestore {
             get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
             || (
               get(/databases/$(database)/documents/rooms/$(roomId)).data.mode == 'explain'
-              && get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == request.auth.uid
+              && (
+                get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == 'all'
+                || get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == request.auth.uid
+              )
               && exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid))
             )
           )
           && incoming().diff(existing()).affectedKeys().hasOnly(['strokes', 'updatedBy', 'updatedByName', 'updatedAt']);
+      }
+
+      match /explainLayers/{layerId} {
+        allow get: if isValidId(roomId) && isValidId(layerId) && isVerified()
+          && (
+            get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
+            || exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid))
+          );
+        allow list: if isValidId(roomId) && isVerified() && resource.data.roomId == roomId;
+        allow create: if isValidId(roomId) && isValidId(layerId) && isVerified()
+          && layerId == request.auth.uid
+          && isValidExplainLayer(incoming())
+          && incoming().id == layerId
+          && incoming().authorId == request.auth.uid
+          && incoming().roomId == roomId
+          && incoming().updatedAt == request.time
+          && get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'active'
+          && get(/databases/$(database)/documents/rooms/$(roomId)).data.mode == 'explain'
+          && (
+            get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
+            || (
+              exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid))
+              && (
+                get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == 'all'
+                || get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == request.auth.uid
+              )
+            )
+          );
+        allow update: if isValidId(roomId) && isValidId(layerId) && isVerified()
+          && isValidExplainLayer(incoming())
+          && incoming().id == existing().id
+          && incoming().roomId == existing().roomId
+          && incoming().authorId == existing().authorId
+          && incoming().authorName == existing().authorName
+          && incoming().updatedAt == request.time
+          && get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'active'
+          && get(/databases/$(database)/documents/rooms/$(roomId)).data.mode == 'explain'
+          && incoming().diff(existing()).affectedKeys().hasOnly(['strokes', 'updatedAt'])
+          && (
+            get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
+            || (
+              layerId == request.auth.uid
+              && exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid))
+              && (
+                get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == 'all'
+                || get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == request.auth.uid
+              )
+            )
+          );
+        allow delete: if isValidId(roomId) && isValidId(layerId) && isVerified()
+          && (
+            layerId == request.auth.uid
+            || get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
+          );
       }
 
       match /participants/{participantId} {
@@ -468,6 +541,7 @@ service cloud.firestore {
           && incoming().wrongStudentIds.size() == 0
           && incoming().winnerId == ''
           && incoming().winnerName == ''
+          && 'timerSeconds' in incoming()
           && incoming().createdAt == request.time
           && incoming().updatedAt == request.time
           && get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
@@ -482,6 +556,8 @@ service cloud.firestore {
           && incoming().orderIndex == existing().orderIndex
           && incoming().text == existing().text
           && incoming().imageData == existing().imageData
+          && ((!('timerSeconds' in existing()) && !('timerSeconds' in incoming()))
+            || ('timerSeconds' in existing() && 'timerSeconds' in incoming() && incoming().timerSeconds == existing().timerSeconds))
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
           && (

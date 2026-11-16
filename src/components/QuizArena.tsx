@@ -15,6 +15,7 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  Clock,
   Eye,
   EyeOff,
   FileText,
@@ -22,11 +23,15 @@ import {
   ImagePlus,
   Maximize2,
   Minimize2,
+  Minus,
   PenTool,
+  Plus,
   Presentation,
+  RotateCcw,
   Send,
   SkipForward,
   Sparkles,
+  Timer,
   Trash2,
   Type,
   Users,
@@ -42,6 +47,7 @@ import {
 } from '../firebase';
 import { renderPdfToSlideImages } from '../pdfUtils';
 import type {
+  ExplainLayer,
   Participant,
   Question,
   Room,
@@ -70,6 +76,41 @@ interface QuizArenaProps {
   isSupervisor: boolean;
 }
 
+interface PrivatePdfDoc {
+  id: string;
+  fileName: string;
+  pages: string[];
+  selectedPage: number;
+}
+
+const TIMER_PRESETS = [
+  { label: 'بدون', seconds: 0 },
+  { label: '30 ث', seconds: 30 },
+  { label: '1 د', seconds: 60 },
+  { label: '1.5 د', seconds: 90 },
+  { label: '2 د', seconds: 120 },
+  { label: '3 د', seconds: 180 },
+  { label: '5 د', seconds: 300 },
+];
+
+function formatTimerClock(totalSeconds: number): string {
+  const safe = Math.max(0, Math.floor(totalSeconds));
+  const mins = Math.floor(safe / 60);
+  const secs = safe % 60;
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function formatTimerArabic(totalSeconds: number): string {
+  if (totalSeconds <= 0) return 'بدون مؤقت';
+  if (totalSeconds < 60) return `${totalSeconds} ثانية`;
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = totalSeconds % 60;
+  const minLabel =
+    mins === 1 ? 'دقيقة واحدة' : mins === 2 ? 'دقيقتان' : `${mins} دقائق`;
+  if (secs === 0) return minLabel;
+  return `${minLabel} و ${secs} ث`;
+}
+
 export const QuizArena: React.FC<QuizArenaProps> = ({
   room,
   profile,
@@ -84,17 +125,19 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
   const [draftText, setDraftText] = useState('');
   const [draftImage, setDraftImage] = useState('');
   const [draftBoardStrokes, setDraftBoardStrokes] = useState<Stroke[]>([]);
-  const [pdfPages, setPdfPages] = useState<string[]>([]);
-  const [pdfFileName, setPdfFileName] = useState('');
-  const [selectedPdfPage, setSelectedPdfPage] = useState<number>(1);
+  const [pdfDocs, setPdfDocs] = useState<PrivatePdfDoc[]>([]);
+  const [activePdfId, setActivePdfId] = useState<string | null>(null);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfProgress, setPdfProgress] = useState('');
   const [draftError, setDraftError] = useState<string | null>(null);
+  const [draftTimerSeconds, setDraftTimerSeconds] = useState<number>(60);
   const [insertingQuestion, setInsertingQuestion] = useState(false);
 
-  // Explain Mode shared whiteboard state
+  // Explain Mode shared whiteboard state (supports simultaneous per-user layers + legacy sharedBoard)
   const [sharedBoardExists, setSharedBoardExists] = useState(false);
   const [sharedStrokes, setSharedStrokes] = useState<Stroke[]>([]);
+  const [explainLayers, setExplainLayers] = useState<ExplainLayer[]>([]);
+  const [localExplainStrokes, setLocalExplainStrokes] = useState<Stroke[]>([]);
   const [explainBusy, setExplainBusy] = useState(false);
 
   // Student local strokes & sync state
@@ -108,9 +151,13 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
   const [finishingRoom, setFinishingRoom] = useState(false);
   const [gradingBusy, setGradingBusy] = useState(false);
   const [studentFullscreen, setStudentFullscreen] = useState(false);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
+  const lastInheritedQuestionIdRef = useRef<string | null>(null);
+  const fallbackStartMapRef = useRef<Record<string, number>>({});
+  const expiredSoundPlayedRef = useRef<string | null>(null);
 
   // Subscribe to published questions in the room
   useEffect(() => {
@@ -131,7 +178,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
     return () => unsub();
   }, [room.id]);
 
-  // Subscribe to synchronized Explain Mode shared whiteboard
+  // Subscribe to synchronized Explain Mode shared whiteboard (legacy single doc + collaborative layers)
   useEffect(() => {
     const sbPath = `rooms/${room.id}/sharedBoard/live`;
     const sbRef = doc(db, 'rooms', room.id, 'sharedBoard', 'live');
@@ -154,10 +201,108 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
     return () => unsub();
   }, [room.id]);
 
+  useEffect(() => {
+    const elPath = `rooms/${room.id}/explainLayers`;
+    const elRef = query(
+      collection(db, 'rooms', room.id, 'explainLayers'),
+      where('roomId', '==', room.id)
+    );
+    const unsub = onSnapshot(
+      elRef,
+      (snap) => {
+        const list: ExplainLayer[] = [];
+        snap.forEach((d) => list.push(d.data() as ExplainLayer));
+        setExplainLayers(list);
+        const mine = list.find((l) => l.id === profile.uid);
+        setLocalExplainStrokes(mine?.strokes ?? []);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, elPath);
+      }
+    );
+    return () => unsub();
+  }, [room.id, profile.uid]);
+
+  const activePdfDoc = useMemo(
+    () => pdfDocs.find((d) => d.id === activePdfId) ?? pdfDocs[0] ?? null,
+    [pdfDocs, activePdfId]
+  );
+
+  const setActivePdfPage = (docId: string, pageNum: number) => {
+    setPdfDocs((prev) =>
+      prev.map((d) => (d.id === docId ? { ...d, selectedPage: pageNum } : d))
+    );
+  };
+
   const currentQuestion = useMemo(() => {
     if (!room.currentQuestionId) return null;
     return questions.find((q) => q.id === room.currentQuestionId) ?? null;
   }, [questions, room.currentQuestionId]);
+
+  const latestQuestion = questions.length > 0 ? questions[questions.length - 1] : null;
+  const previousTimerSeconds =
+    latestQuestion && typeof latestQuestion.timerSeconds === 'number'
+      ? latestQuestion.timerSeconds
+      : null;
+
+  // Automatically default each new question's timer to the previous question's timer
+  useEffect(() => {
+    if (!latestQuestion) return;
+    if (lastInheritedQuestionIdRef.current !== latestQuestion.id) {
+      lastInheritedQuestionIdRef.current = latestQuestion.id;
+      if (typeof latestQuestion.timerSeconds === 'number') {
+        setDraftTimerSeconds(latestQuestion.timerSeconds);
+      }
+    }
+  }, [latestQuestion?.id, latestQuestion?.timerSeconds]);
+
+  const activeTimerTotal = currentQuestion?.timerSeconds ?? 0;
+
+  useEffect(() => {
+    if (!currentQuestion || currentQuestion.status !== 'solving' || activeTimerTotal <= 0) {
+      return;
+    }
+    setNowMs(Date.now());
+    const id = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 250);
+    return () => window.clearInterval(id);
+  }, [currentQuestion?.id, currentQuestion?.status, activeTimerTotal]);
+
+  const timerRemainingSeconds = useMemo(() => {
+    if (!currentQuestion || activeTimerTotal <= 0) return null;
+    if (currentQuestion.status !== 'solving') return 0;
+    let startMs = getTimestampMillis(currentQuestion.createdAt);
+    if (startMs <= 0) {
+      if (!fallbackStartMapRef.current[currentQuestion.id]) {
+        fallbackStartMapRef.current[currentQuestion.id] = Date.now();
+      }
+      startMs = fallbackStartMapRef.current[currentQuestion.id];
+    }
+    const elapsedMs = Math.max(0, nowMs - startMs);
+    const remaining = Math.ceil((activeTimerTotal * 1000 - elapsedMs) / 1000);
+    return Math.min(activeTimerTotal, Math.max(0, remaining));
+  }, [
+    currentQuestion?.id,
+    currentQuestion?.status,
+    currentQuestion?.createdAt,
+    activeTimerTotal,
+    nowMs,
+  ]);
+
+  const isTimeUp =
+    Boolean(currentQuestion) &&
+    currentQuestion?.status === 'solving' &&
+    activeTimerTotal > 0 &&
+    timerRemainingSeconds === 0;
+
+  useEffect(() => {
+    if (!currentQuestion || !isTimeUp) return;
+    if (expiredSoundPlayedRef.current !== currentQuestion.id) {
+      expiredSoundPlayedRef.current = currentQuestion.id;
+      playDuoSound('wrong');
+    }
+  }, [isTimeUp, currentQuestion?.id]);
 
   // Subscribe to boards for the active question
   useEffect(() => {
@@ -244,36 +389,54 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
     }
   };
 
-  // Supervisor: upload private PDF and render pages locally (only chosen page is ever sent to Firestore)
+  // Supervisor: upload one or multiple private PDFs and append them to the question library
   const handlePdfPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const pickedFiles: File[] = e.target.files ? Array.from(e.target.files) : [];
     e.target.value = '';
-    if (!file) return;
+    if (pickedFiles.length === 0) return;
 
-    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-    if (!isPdf) {
+    const validPdfs = pickedFiles.filter(
+      (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
+    );
+    if (validPdfs.length === 0) {
       setDraftError('يرجى اختيار ملف PDF صالح');
       return;
     }
 
     setDraftError(null);
     setPdfLoading(true);
-    setPdfProgress('جاري قراءة صفحات ملف PDF...');
+    setPdfProgress('جاري قراءة صفحات ملفات PDF...');
+    const addedDocs: PrivatePdfDoc[] = [];
+
     try {
-      const pages = await renderPdfToSlideImages(
-        file,
-        (current, total) => {
-          setPdfProgress(`جاري تجهيز الصفحة ${current} من ${total} (محلياً لدى المشرف فقط)...`);
-        },
-        30
-      );
-      if (pages.length === 0) {
-        setDraftError('لم يتم العثور على صفحات في هذا الملف');
+      for (let i = 0; i < validPdfs.length; i++) {
+        const file = validPdfs[i];
+        const pages = await renderPdfToSlideImages(
+          file,
+          (current, total) => {
+            setPdfProgress(
+              `ملف (${i + 1}/${validPdfs.length}): ${file.name} — صفحة ${current} من ${total} (محلياً لدى المشرف فقط)...`
+            );
+          },
+          30
+        );
+        if (pages.length > 0) {
+          addedDocs.push({
+            id: `pdf_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`,
+            fileName: file.name,
+            pages,
+            selectedPage: 1,
+          });
+        }
+      }
+
+      if (addedDocs.length === 0) {
+        setDraftError('لم يتم العثور على صفحات صالحة في الملفات المختارة');
         return;
       }
-      setPdfPages(pages);
-      setPdfFileName(file.name);
-      setSelectedPdfPage(1);
+
+      setPdfDocs((prev) => [...prev, ...addedDocs]);
+      setActivePdfId(addedDocs[0].id);
       setComposerTab('pdf');
       playDuoSound('pop');
     } catch (err) {
@@ -290,8 +453,8 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
     if (!isSupervisor || insertingQuestion) return;
 
     let finalImageData = '';
-    if (composerTab === 'pdf' && pdfPages.length > 0) {
-      finalImageData = pdfPages[selectedPdfPage - 1] ?? '';
+    if (composerTab === 'pdf' && activePdfDoc && activePdfDoc.pages.length > 0) {
+      finalImageData = activePdfDoc.pages[activePdfDoc.selectedPage - 1] ?? '';
     } else if (composerTab === 'board') {
       if (draftBoardStrokes.length > 0) {
         finalImageData = renderStrokesToDataUrl(draftBoardStrokes);
@@ -318,6 +481,8 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
 
     const newQId = `q_${Date.now()}`;
     const orderIndex = questions.length + 1;
+    const safeTimerSeconds = Math.max(0, Math.min(3600, Math.round(draftTimerSeconds)));
+
     try {
       const batch = writeBatch(db);
       const qDocRef = doc(db, 'rooms', room.id, 'questions', newQId);
@@ -332,6 +497,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
         wrongStudentIds: [],
         winnerId: '',
         winnerName: '',
+        timerSeconds: safeTimerSeconds,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -352,15 +518,16 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
     }
   };
 
-  // Supervisor: toggle between Quiz Mode and Explain Mode
+  // Supervisor: toggle between Quiz Mode and Explain Mode (defaults to 'all' so students can write alongside the supervisor)
   const handleToggleExplainMode = async (nextMode: 'quiz' | 'explain') => {
     if (!isSupervisor || explainBusy) return;
     setExplainBusy(true);
     try {
       await updateDoc(doc(db, 'rooms', room.id), {
         mode: nextMode,
-        explainPresenterId: profile.uid,
-        explainPresenterName: profile.fullNameQuad,
+        explainPresenterId: nextMode === 'explain' ? 'all' : profile.uid,
+        explainPresenterName:
+          nextMode === 'explain' ? 'الجميع (المشرف والطلاب)' : profile.fullNameQuad,
         updatedAt: serverTimestamp(),
       });
       playDuoSound('pop');
@@ -371,7 +538,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
     }
   };
 
-  // Supervisor: assign who draws on the shared explain board
+  // Supervisor: assign who draws on the shared explain board ('all', supervisor UID, or a specific student UID)
   const handleSelectPresenter = async (presenterId: string, presenterName: string) => {
     if (!isSupervisor || explainBusy) return;
     setExplainBusy(true);
@@ -390,35 +557,66 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
     }
   };
 
-  // Active presenter (Supervisor or selected Student): sync shared explain board live
-  const handleSharedStrokesChange = async (nextStrokes: Stroke[]) => {
+  // Collaborative per-user layer sync in Explain Mode (prevents overwriting strokes when supervisor & students write together)
+  const handleExplainLayerStrokesChange = async (nextStrokes: Stroke[]) => {
     const canDraw =
       isSupervisor ||
-      (room.mode === 'explain' && room.explainPresenterId === profile.uid);
+      (room.mode === 'explain' &&
+        (room.explainPresenterId === 'all' ||
+          room.explainPresenterId === profile.uid ||
+          !room.explainPresenterId));
     if (!canDraw) return;
 
-    setSharedStrokes(nextStrokes);
-    const sbPath = `rooms/${room.id}/sharedBoard/live`;
-    const sbRef = doc(db, 'rooms', room.id, 'sharedBoard', 'live');
+    setLocalExplainStrokes(nextStrokes);
+    const layerPath = `rooms/${room.id}/explainLayers/${profile.uid}`;
+    const layerRef = doc(db, 'rooms', room.id, 'explainLayers', profile.uid);
+    const existingMine = explainLayers.find((l) => l.id === profile.uid);
+
     try {
-      if (!sharedBoardExists) {
-        await setDoc(sbRef, {
+      if (!existingMine) {
+        await setDoc(layerRef, {
+          id: profile.uid,
           roomId: room.id,
+          authorId: profile.uid,
+          authorName: profile.fullNameQuad,
           strokes: nextStrokes,
-          updatedBy: profile.uid,
-          updatedByName: profile.fullNameQuad,
           updatedAt: serverTimestamp(),
         });
       } else {
-        await updateDoc(sbRef, {
+        await updateDoc(layerRef, {
           strokes: nextStrokes,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, layerPath);
+    }
+  };
+
+  // Supervisor: clear everyone's explain layers + legacy sharedBoard
+  const handleClearAllExplainBoard = async () => {
+    if (!isSupervisor || explainBusy) return;
+    setExplainBusy(true);
+    setLocalExplainStrokes([]);
+    try {
+      const batch = writeBatch(db);
+      for (const layer of explainLayers) {
+        batch.delete(doc(db, 'rooms', room.id, 'explainLayers', layer.id));
+      }
+      if (sharedBoardExists) {
+        batch.update(doc(db, 'rooms', room.id, 'sharedBoard', 'live'), {
+          strokes: [],
           updatedBy: profile.uid,
           updatedByName: profile.fullNameQuad,
           updatedAt: serverTimestamp(),
         });
       }
+      await batch.commit();
+      playDuoSound('pop');
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, sbPath);
+      handleFirestoreError(err, OperationType.WRITE, `rooms/${room.id}/explainLayers`);
+    } finally {
+      setExplainBusy(false);
     }
   };
 
@@ -461,6 +659,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
   };
 
   const handleStrokesChange = (next: Stroke[]) => {
+    if (isTimeUp) return;
     setLocalStrokes(next);
     if (!currentQuestion || currentQuestion.status !== 'solving') return;
     if (myBoard?.submitted || myBoard?.verdict === 'wrong') return;
@@ -468,7 +667,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
   };
 
   const handleStudentSubmit = async () => {
-    if (!currentQuestion || submittingBoard || isSupervisor) return;
+    if (!currentQuestion || submittingBoard || isSupervisor || isTimeUp) return;
     setSubmittingBoard(true);
     try {
       await syncStudentBoard(localStrokes, true);
@@ -641,8 +840,15 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
         subtitle: 'بانتظار تأكيد المشرف على صحة الإجابة',
       };
     }
+    if (isTimeUp) {
+      return {
+        locked: true,
+        title: 'انتهى وقت السؤال!',
+        subtitle: 'انتهت المهلة المحددة لهذا السؤال — بانتظار المشرف لإنهائه أو إدراج السؤال التالي',
+      };
+    }
     return { locked: false, title: '', subtitle: '' };
-  }, [currentQuestion, myBoard?.submitted, myBoard?.verdict, profile.uid]);
+  }, [currentQuestion, myBoard?.submitted, myBoard?.verdict, profile.uid, isTimeUp]);
 
   useEffect(() => {
     if (studentLockedInfo.locked) {
@@ -651,9 +857,30 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
   }, [studentLockedInfo.locked, currentQuestion?.id]);
 
   const isExplainMode = room.mode === 'explain';
+  const isExplainOpenToAll =
+    room.explainPresenterId === 'all' || !room.explainPresenterId;
   const canDrawOnSharedBoard =
-    isSupervisor || (isExplainMode && room.explainPresenterId === profile.uid);
-  const currentPresenterName = room.explainPresenterName || room.supervisorName;
+    isSupervisor ||
+    (isExplainMode &&
+      (isExplainOpenToAll || room.explainPresenterId === profile.uid));
+  const currentPresenterName = isExplainOpenToAll
+    ? 'الجميع (المشرف والطلاب معاً)'
+    : room.explainPresenterName || room.supervisorName;
+
+  const otherExplainOverlayLayers = useMemo(() => {
+    const layers = explainLayers
+      .filter((l) => l.id !== profile.uid && (l.strokes?.length ?? 0) > 0)
+      .map((l) => l.strokes);
+    if (sharedStrokes.length > 0) {
+      layers.unshift(sharedStrokes);
+    }
+    return layers;
+  }, [explainLayers, profile.uid, sharedStrokes]);
+
+  const hasAnyExplainStrokes =
+    localExplainStrokes.length > 0 ||
+    sharedStrokes.length > 0 ||
+    explainLayers.some((l) => (l.strokes?.length ?? 0) > 0);
 
   const myParticipant = participants.find((p) => p.uid === profile.uid);
   const progressPercent = currentQuestion
@@ -760,17 +987,20 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                 </div>
               </div>
 
-              {!isSupervisor && room.explainPresenterId === profile.uid && (
-                <span className="px-4 py-2 rounded-xl bg-[#D7FFB8] border-2 border-[#58CC02] text-[#46A302] text-sm font-black">
-                  أنت تملك القلم الآن — ارسم وسيظهر شرحك للجميع
+              {!isSupervisor && canDrawOnSharedBoard && (
+                <span className="px-4 py-2 rounded-xl bg-[#D7FFB8] border-2 border-[#58CC02] text-[#46A302] text-xs sm:text-sm font-black">
+                  {isExplainOpenToAll
+                    ? 'السبورة مفتوحة للجميع — يمكنك الكتابة والرسم مع المشرف والطلاب مباشرة!'
+                    : 'أنت تملك القلم الآن — ارسم وسيظهر شرحك للجميع'}
                 </span>
               )}
 
-              {isSupervisor && sharedStrokes.length > 0 && (
+              {isSupervisor && hasAnyExplainStrokes && (
                 <button
                   type="button"
-                  onClick={() => void handleSharedStrokesChange([])}
-                  className="duo-btn flex items-center gap-1.5 px-4 py-2 rounded-xl bg-white border-2 border-b-4 border-[#E5E5E5] text-xs font-black text-[#EA2B2B] hover:bg-[#FFDFE0] cursor-pointer"
+                  disabled={explainBusy}
+                  onClick={() => void handleClearAllExplainBoard()}
+                  className="duo-btn flex items-center gap-1.5 px-4 py-2 rounded-xl bg-white border-2 border-b-4 border-[#E5E5E5] text-xs font-black text-[#EA2B2B] hover:bg-[#FFDFE0] cursor-pointer disabled:opacity-60"
                 >
                   <Trash2 className="w-4 h-4" />
                   <span>مسح سبورة الشرح للجميع</span>
@@ -778,25 +1008,40 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
               )}
             </div>
 
-            {/* Supervisor Presenter Picker (Supervisor or Any Student) */}
+            {/* Supervisor Presenter Picker (All together, Supervisor only, or Specific Student) */}
             {isSupervisor && (
               <div className="pt-3 border-t-2 border-[#BCE8FF] flex flex-col gap-2.5">
                 <div className="flex items-center gap-2 text-xs font-extrabold text-[#1899D6]">
                   <Users className="w-4 h-4" />
-                  <span>اختر من يكتب ويشرح على السبورة الآن (المشرف أو أحد الطلاب):</span>
+                  <span>صلاحية الكتابة على سبورة الشرح الجماعية:</span>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={explainBusy}
+                    onClick={() =>
+                      handleSelectPresenter('all', 'الجميع (المشرف والطلاب)')
+                    }
+                    className={`duo-btn px-4 py-2 rounded-xl border-2 border-b-4 text-xs font-black cursor-pointer whitespace-nowrap ${
+                      isExplainOpenToAll
+                        ? 'bg-[#58CC02] border-[#46A302] text-white'
+                        : 'bg-white border-[#E5E5E5] text-[#3C3C3C] hover:bg-[#F7F7F7]'
+                    }`}
+                  >
+                    الجميع (المشرف + الطلاب)
+                  </button>
+
                   <button
                     type="button"
                     disabled={explainBusy}
                     onClick={() => handleSelectPresenter(profile.uid, profile.fullNameQuad)}
                     className={`duo-btn px-4 py-2 rounded-xl border-2 border-b-4 text-xs font-black cursor-pointer whitespace-nowrap ${
                       room.explainPresenterId === profile.uid
-                        ? 'bg-[#58CC02] border-[#46A302] text-white'
+                        ? 'bg-[#1CB0F6] border-[#1899D6] text-white'
                         : 'bg-white border-[#E5E5E5] text-[#3C3C3C] hover:bg-[#F7F7F7]'
                     }`}
                   >
-                    المشرف (أنت)
+                    المشرف فقط
                   </button>
 
                   {participants.map((p) => {
@@ -822,13 +1067,14 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
             )}
           </div>
 
-          {/* Synchronized Explain Whiteboard */}
+          {/* Synchronized Explain Whiteboard (Collaborative multi-layer) */}
           <WhiteboardCanvas
-            strokes={sharedStrokes}
-            onStrokesChange={(next) => void handleSharedStrokesChange(next)}
+            strokes={localExplainStrokes}
+            overlayStrokeLayers={otherExplainOverlayLayers}
+            onStrokesChange={(next) => void handleExplainLayerStrokesChange(next)}
             viewOnly={!canDrawOnSharedBoard}
             syncIntervalMs={220}
-            heightClass="h-[300px] sm:h-[440px] md:h-[540px]"
+            heightClass="h-[320px] sm:h-[460px] md:h-[560px]"
           />
         </div>
       ) : (
@@ -875,18 +1121,80 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
               )}
             </div>
 
-            {isSupervisor && currentQuestion.status === 'solving' && (
-              <button
-                type="button"
-                disabled={gradingBusy}
-                onClick={handleCloseQuestionUnanswered}
-                className="duo-btn flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border-2 border-b-4 border-[#E5E5E5] text-xs font-extrabold text-[#777777] hover:text-[#3C3C3C] cursor-pointer"
-              >
-                <SkipForward className="w-4 h-4" />
-                <span>تخطي السؤال</span>
-              </button>
-            )}
+            <div className="flex flex-wrap items-center gap-2">
+              {currentQuestion.status === 'solving' && activeTimerTotal > 0 && timerRemainingSeconds !== null && (
+                <div
+                  className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl border-2 font-black text-sm ${
+                    isTimeUp
+                      ? 'bg-[#FFDFE0] border-[#FF4B4B] text-[#EA2B2B]'
+                      : timerRemainingSeconds <= 10
+                      ? 'bg-[#FFDFE0] border-[#FF4B4B] text-[#EA2B2B] animate-pulse'
+                      : 'bg-[#DDF4FF] border-[#1CB0F6] text-[#1899D6]'
+                  }`}
+                >
+                  <Timer className="w-4 h-4 shrink-0" />
+                  <span className="font-latin text-base">
+                    {formatTimerClock(timerRemainingSeconds)}
+                  </span>
+                  <span className="text-xs">
+                    {isTimeUp ? 'انتهى الوقت!' : 'الوقت المتبقي'}
+                  </span>
+                </div>
+              )}
+
+              {isSupervisor && currentQuestion.status === 'solving' && (
+                <button
+                  type="button"
+                  disabled={gradingBusy}
+                  onClick={handleCloseQuestionUnanswered}
+                  className={`duo-btn flex items-center gap-1.5 px-3.5 py-2 rounded-xl border-2 border-b-4 text-xs font-extrabold cursor-pointer ${
+                    isTimeUp
+                      ? 'bg-[#FF4B4B] hover:bg-[#FF6161] border-[#EA2B2B] text-white'
+                      : 'bg-white border-[#E5E5E5] text-[#777777] hover:text-[#3C3C3C]'
+                  }`}
+                >
+                  <SkipForward className="w-4 h-4" />
+                  <span>{isTimeUp ? 'إغلاق السؤال وتجهيز التالي' : 'تخطي السؤال'}</span>
+                </button>
+              )}
+            </div>
           </div>
+
+          {currentQuestion.status === 'solving' && activeTimerTotal > 0 && timerRemainingSeconds !== null && (
+            <div className="flex flex-col gap-2">
+              <div className="w-full h-2.5 rounded-full bg-[#E5E5E5] overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${
+                    isTimeUp || timerRemainingSeconds <= 10 ? 'bg-[#FF4B4B]' : 'bg-[#1CB0F6]'
+                  }`}
+                  style={{
+                    width: `${Math.max(
+                      0,
+                      Math.min(100, (timerRemainingSeconds / activeTimerTotal) * 100)
+                    )}%`,
+                  }}
+                />
+              </div>
+
+              {isSupervisor && isTimeUp && (
+                <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-2xl bg-[#FFDFE0]/70 border-2 border-[#FF4B4B] text-xs font-black text-[#EA2B2B]">
+                  <span>
+                    {pendingQueue.length > 0
+                      ? 'انتهى الوقت — يمكنك تصحيح الإجابات المرسلة أدناه أو إغلاق السؤال الآن.'
+                      : 'انتهى وقت السؤال ولم يرسل أحد الحل — أغلق السؤال لتتمكن من إدراج السؤال التالي.'}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={gradingBusy}
+                    onClick={handleCloseQuestionUnanswered}
+                    className="duo-btn px-3.5 py-1.5 rounded-xl bg-[#FF4B4B] border-2 border-b-3 border-[#EA2B2B] text-white text-xs font-black cursor-pointer"
+                  >
+                    إغلاق السؤال الآن
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="flex flex-col md:flex-row gap-3 sm:gap-4 items-start md:items-center justify-between">
             {currentQuestion.text && (
@@ -1062,8 +1370,8 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                   >
                     <FileText className="w-3.5 h-3.5" />
                     <span>
-                      {pdfPages.length > 0
-                        ? `صفحة من PDF (${pdfPages.length})`
+                      {pdfDocs.length > 0
+                        ? `ملفات PDF (${pdfDocs.length})`
                         : 'تحديد صفحة من PDF'}
                     </span>
                   </button>
@@ -1147,15 +1455,16 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                     ref={pdfInputRef}
                     type="file"
                     accept="application/pdf"
+                    multiple
                     onChange={handlePdfPick}
                     className="hidden"
                   />
 
                   {pdfLoading ? (
                     <div className="p-8 rounded-2xl bg-[#FFF4CC]/60 border-2 border-[#FFC800] text-center text-sm font-black text-[#9A6B00]">
-                      {pdfProgress || 'جاري تجهيز صفحات ملف PDF...'}
+                      {pdfProgress || 'جاري تجهيز صفحات ملفات PDF...'}
                     </div>
-                  ) : pdfPages.length === 0 ? (
+                  ) : !activePdfDoc ? (
                     <button
                       type="button"
                       onClick={() => pdfInputRef.current?.click()}
@@ -1163,68 +1472,124 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                     >
                       <FileText className="w-9 h-9" />
                       <span className="text-base font-black">
-                        ارفع ملف PDF خاص بك لتحديد صفحة واحدة وإظهارها للطلاب
+                        ارفع ملفاً أو عدة ملفات PDF لاختيار أي سؤال منها وإظهاره للطلاب
                       </span>
                       <span className="text-xs font-bold text-[#777777]">
-                        لا يظهر الملف للطلاب نهائياً — تظهر فقط الصفحة التي تحددها وتضغط إظهارها
+                        لا يظهر أي ملف للطلاب نهائياً — تبقى جميع الملفات في مكتبتك وتظهر فقط الصفحة التي تحددها
                       </span>
                     </button>
                   ) : (
-                    <div className="flex flex-col gap-3 bg-[#F7F7F7] border-2 border-[#E5E5E5] rounded-2xl p-4">
-                      {/* PDF Header & Page Picker */}
-                      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b-2 border-[#E5E5E5]">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <FileText className="w-4 h-4 text-[#9A6B00] shrink-0" />
-                          <span className="text-xs font-black text-[#3C3C3C] truncate max-w-[220px]">
-                            {pdfFileName}
+                    <div className="flex flex-col gap-3 bg-[#F7F7F7] border-2 border-[#E5E5E5] rounded-2xl p-3.5 sm:p-4">
+                      {/* Multi-PDF Private Library Switcher */}
+                      <div className="flex flex-col gap-2.5 pb-3 border-b-2 border-[#E5E5E5]">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-xs font-black text-[#9A6B00]">
+                            مكتبة ملفات PDF الخاصة بك ({pdfDocs.length}{' '}
+                            {pdfDocs.length === 1 ? 'ملف' : 'ملفات'}):
                           </span>
-                          <span className="font-latin text-xs font-extrabold text-[#777777]">
-                            ({pdfPages.length} صفحة)
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => pdfInputRef.current?.click()}
+                              className="duo-btn flex items-center gap-1 px-3 py-1.5 rounded-xl bg-[#DDF4FF] border-2 border-b-3 border-[#1CB0F6] text-xs font-black text-[#1899D6] cursor-pointer"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              <span>إضافة ملف PDF آخر</span>
+                            </button>
+                            {pdfDocs.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPdfDocs([]);
+                                  setActivePdfId(null);
+                                }}
+                                className="duo-btn px-3 py-1.5 rounded-xl bg-white border-2 border-b-3 border-[#E5E5E5] text-xs font-black text-[#EA2B2B] cursor-pointer"
+                              >
+                                مسح الكل
+                              </button>
+                            )}
+                          </div>
                         </div>
 
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => pdfInputRef.current?.click()}
-                            className="duo-btn px-3 py-1.5 rounded-xl bg-white border-2 border-b-3 border-[#E5E5E5] text-xs font-black text-[#1899D6] cursor-pointer"
-                          >
-                            تغيير ملف PDF
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setPdfPages([]);
-                              setPdfFileName('');
-                              setSelectedPdfPage(1);
-                            }}
-                            className="duo-btn px-3 py-1.5 rounded-xl bg-white border-2 border-b-3 border-[#E5E5E5] text-xs font-black text-[#EA2B2B] cursor-pointer"
-                          >
-                            إزالة
-                          </button>
+                        {/* Uploaded PDF File Tabs */}
+                        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                          {pdfDocs.map((docItem, idx) => {
+                            const isActive = docItem.id === activePdfDoc.id;
+                            return (
+                              <div
+                                key={docItem.id}
+                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 shrink-0 ${
+                                  isActive
+                                    ? 'bg-[#FFC800] border-[#E5A400] text-[#3C3C3C]'
+                                    : 'bg-white border-[#E5E5E5] text-[#777777] hover:text-[#3C3C3C]'
+                                }`}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => setActivePdfId(docItem.id)}
+                                  className="flex items-center gap-1.5 text-xs font-black cursor-pointer"
+                                >
+                                  <FileText className="w-3.5 h-3.5 shrink-0" />
+                                  <span className="truncate max-w-[160px]">
+                                    {idx + 1}. {docItem.fileName}
+                                  </span>
+                                  <span className="font-latin text-[11px] opacity-80">
+                                    ({docItem.pages.length} ص)
+                                  </span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setPdfDocs((prev) => {
+                                      const next = prev.filter((d) => d.id !== docItem.id);
+                                      if (activePdfId === docItem.id) {
+                                        setActivePdfId(next[0]?.id ?? null);
+                                      }
+                                      return next;
+                                    });
+                                  }}
+                                  className="p-0.5 rounded-md hover:bg-black/10 text-[#3C3C3C] cursor-pointer"
+                                  title="إزالة هذا الملف"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
 
-                      {/* Page Selector Strip */}
+                      {/* Page Selector Strip for Active PDF */}
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
                           <button
                             type="button"
-                            disabled={selectedPdfPage <= 1}
-                            onClick={() => setSelectedPdfPage((p) => Math.max(1, p - 1))}
+                            disabled={activePdfDoc.selectedPage <= 1}
+                            onClick={() =>
+                              setActivePdfPage(
+                                activePdfDoc.id,
+                                Math.max(1, activePdfDoc.selectedPage - 1)
+                              )
+                            }
                             className="duo-btn flex items-center gap-1 px-3 py-1.5 rounded-xl bg-white border-2 border-b-3 border-[#E5E5E5] text-xs font-black text-[#3C3C3C] cursor-pointer disabled:opacity-40"
                           >
                             <ChevronRight className="w-4 h-4" />
                             <span>السابقة</span>
                           </button>
                           <span className="font-latin px-3 py-1 rounded-xl bg-[#FFC800] text-[#3C3C3C] text-xs font-black">
-                            الصفحة المحددة: {selectedPdfPage} / {pdfPages.length}
+                            الصفحة المحددة: {activePdfDoc.selectedPage} / {activePdfDoc.pages.length}
                           </span>
                           <button
                             type="button"
-                            disabled={selectedPdfPage >= pdfPages.length}
+                            disabled={activePdfDoc.selectedPage >= activePdfDoc.pages.length}
                             onClick={() =>
-                              setSelectedPdfPage((p) => Math.min(pdfPages.length, p + 1))
+                              setActivePdfPage(
+                                activePdfDoc.id,
+                                Math.min(
+                                  activePdfDoc.pages.length,
+                                  activePdfDoc.selectedPage + 1
+                                )
+                              )
                             }
                             className="duo-btn flex items-center gap-1 px-3 py-1.5 rounded-xl bg-white border-2 border-b-3 border-[#E5E5E5] text-xs font-black text-[#3C3C3C] cursor-pointer disabled:opacity-40"
                           >
@@ -1234,15 +1599,15 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                         </div>
 
                         <div className="flex items-center gap-1.5 overflow-x-auto max-w-full py-1">
-                          {pdfPages.map((_, idx) => {
+                          {activePdfDoc.pages.map((_, idx) => {
                             const pageNum = idx + 1;
                             return (
                               <button
                                 key={pageNum}
                                 type="button"
-                                onClick={() => setSelectedPdfPage(pageNum)}
+                                onClick={() => setActivePdfPage(activePdfDoc.id, pageNum)}
                                 className={`font-latin min-w-[30px] h-7 px-2 rounded-lg text-xs font-black cursor-pointer shrink-0 ${
-                                  selectedPdfPage === pageNum
+                                  activePdfDoc.selectedPage === pageNum
                                     ? 'bg-[#1CB0F6] text-white border-2 border-[#1899D6]'
                                     : 'bg-white text-[#777777] border border-[#E5E5E5] hover:text-[#3C3C3C]'
                                 }`}
@@ -1260,14 +1625,14 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                         maxLength={1000}
                         value={draftText}
                         onChange={(e) => setDraftText(e.target.value)}
-                        placeholder={`ملاحظة أو عنوان للطلاب مع الصفحة ${selectedPdfPage} (اختياري، مثال: حل التمرين رقم 2)...`}
+                        placeholder={`ملاحظة أو عنوان للطلاب مع صفحة ${activePdfDoc.selectedPage} من (${activePdfDoc.fileName})...`}
                         className="w-full px-4 py-2.5 rounded-2xl bg-white border-2 border-[#E5E5E5] focus:border-[#1CB0F6] outline-none text-sm font-bold text-[#3C3C3C]"
                       />
 
                       <div className="rounded-2xl border-2 border-[#E5E5E5] bg-white p-2 flex items-center justify-center max-h-[340px] overflow-hidden">
                         <img
-                          src={pdfPages[selectedPdfPage - 1]}
-                          alt={`معاينة صفحة ${selectedPdfPage}`}
+                          src={activePdfDoc.pages[activePdfDoc.selectedPage - 1]}
+                          alt={`معاينة صفحة ${activePdfDoc.selectedPage}`}
                           className="max-h-[315px] w-auto object-contain rounded-lg"
                         />
                       </div>
@@ -1304,14 +1669,98 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                 </div>
               )}
 
+              {/* Per-Question Timer Picker (Automatically inherits previous question's timer) */}
+              <div className="rounded-2xl bg-[#F7F7F7] border-2 border-[#E5E5E5] p-3.5 sm:p-4 flex flex-col gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-xl bg-[#DDF4FF] border-2 border-[#1CB0F6] text-[#1899D6] flex items-center justify-center shrink-0">
+                      <Clock className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <span className="text-xs sm:text-sm font-black text-[#3C3C3C] block">
+                        مؤقت السؤال ({formatTimerArabic(draftTimerSeconds)})
+                      </span>
+                      <span className="text-[11px] font-bold text-[#777777]">
+                        {previousTimerSeconds !== null
+                          ? draftTimerSeconds === previousTimerSeconds
+                            ? `مضبوط تلقائياً على مدة السؤال السابق (${formatTimerArabic(previousTimerSeconds)})`
+                            : `تم التعديل عن السؤال السابق (${formatTimerArabic(previousTimerSeconds)})`
+                          : 'يُحفظ هذا التوقيت تلقائياً لكل سؤال قادم ما لم تغيّره'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    {previousTimerSeconds !== null && draftTimerSeconds !== previousTimerSeconds && (
+                      <button
+                        type="button"
+                        onClick={() => setDraftTimerSeconds(previousTimerSeconds)}
+                        className="duo-btn flex items-center gap-1 px-2.5 py-1 rounded-xl bg-white border-2 border-b-3 border-[#E5E5E5] text-[11px] font-black text-[#1899D6] cursor-pointer"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>نفس السابق</span>
+                      </button>
+                    )}
+
+                    <div className="flex items-center gap-1 bg-white border-2 border-[#E5E5E5] rounded-xl px-1.5 py-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDraftTimerSeconds((s) => Math.max(0, s - 15))
+                        }
+                        className="w-7 h-7 rounded-lg bg-[#F7F7F7] hover:bg-[#FFDFE0] text-[#3C3C3C] flex items-center justify-center cursor-pointer"
+                        title="إنقاص 15 ثانية"
+                      >
+                        <Minus className="w-3.5 h-3.5" />
+                      </button>
+                      <span className="font-latin min-w-[54px] text-center text-xs sm:text-sm font-black text-[#1899D6]">
+                        {draftTimerSeconds === 0 ? 'مفتوح' : formatTimerClock(draftTimerSeconds)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDraftTimerSeconds((s) => Math.min(3600, s + 15))
+                        }
+                        className="w-7 h-7 rounded-lg bg-[#F7F7F7] hover:bg-[#D7FFB8] text-[#3C3C3C] flex items-center justify-center cursor-pointer"
+                        title="زيادة 15 ثانية"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+                  {TIMER_PRESETS.map((preset) => {
+                    const active = draftTimerSeconds === preset.seconds;
+                    return (
+                      <button
+                        key={preset.seconds}
+                        type="button"
+                        onClick={() => setDraftTimerSeconds(preset.seconds)}
+                        className={`duo-btn px-3 py-1.5 rounded-xl border-2 border-b-3 text-xs font-black cursor-pointer shrink-0 whitespace-nowrap ${
+                          active
+                            ? preset.seconds === 0
+                              ? 'bg-[#FFC800] border-[#E5A400] text-[#3C3C3C]'
+                              : 'bg-[#1CB0F6] border-[#1899D6] text-white'
+                            : 'bg-white border-[#E5E5E5] text-[#777777] hover:text-[#3C3C3C]'
+                        }`}
+                      >
+                        {preset.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               {draftError && (
                 <p className="text-sm font-extrabold text-[#EA2B2B]">{draftError}</p>
               )}
 
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <span className="text-xs font-bold text-[#777777]">
-                  {composerTab === 'pdf' && pdfPages.length > 0
-                    ? `ستظهر الصفحة رقم ${selectedPdfPage} فقط للطلاب ليبدأوا الحل على سبوراتهم`
+                  {composerTab === 'pdf' && activePdfDoc
+                    ? `ستظهر صفحة ${activePdfDoc.selectedPage} من (${activePdfDoc.fileName}) فقط للطلاب ليبدأوا الحل عليها`
                     : draftBoardStrokes.length > 0 && !draftImage
                     ? 'سيتم إرفاق رسم سبورتك الخاصة مع السؤال تلقائياً'
                     : 'لا يظهر للطلاب أي شيء حتى تضغط زر الإدراج'}
@@ -1321,7 +1770,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                   disabled={insertingQuestion || pdfLoading}
                   className="duo-btn w-full sm:w-auto flex items-center justify-center gap-2.5 px-6 sm:px-8 py-3.5 rounded-2xl bg-[#58CC02] hover:bg-[#61E002] border-2 border-[#46A302] border-b-[5px] text-white text-sm sm:text-base font-black cursor-pointer disabled:opacity-60"
                 >
-                  {composerTab === 'pdf' && pdfPages.length > 0 ? (
+                  {composerTab === 'pdf' && activePdfDoc ? (
                     <Eye className="w-5 h-5" />
                   ) : (
                     <Send className="w-5 h-5" />
@@ -1329,8 +1778,8 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                   <span>
                     {insertingQuestion
                       ? 'جاري النشر...'
-                      : composerTab === 'pdf' && pdfPages.length > 0
-                      ? `إظهار صفحة ${selectedPdfPage} وإدراجها للجميع`
+                      : composerTab === 'pdf' && activePdfDoc
+                      ? `إظهار صفحة ${activePdfDoc.selectedPage} وإدراجها للجميع`
                       : 'أدرج السؤال للجميع'}
                   </span>
                 </button>
@@ -1461,6 +1910,23 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
+              {currentQuestion &&
+                currentQuestion.status === 'solving' &&
+                activeTimerTotal > 0 &&
+                timerRemainingSeconds !== null && (
+                  <div
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded-xl border-2 text-xs font-black shrink-0 ${
+                      isTimeUp || timerRemainingSeconds <= 10
+                        ? 'bg-[#FFDFE0] border-[#FF4B4B] text-[#EA2B2B]'
+                        : 'bg-[#DDF4FF] border-[#1CB0F6] text-[#1899D6]'
+                    }`}
+                  >
+                    <Timer className="w-3.5 h-3.5" />
+                    <span className="font-latin">
+                      {formatTimerClock(timerRemainingSeconds)}
+                    </span>
+                  </div>
+                )}
               {currentQuestion?.imageData && (
                 <button
                   type="button"

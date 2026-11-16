@@ -63,6 +63,15 @@ export interface SharedExplainBoard {
   updatedAt?: unknown;
 }
 
+export interface ExplainLayer {
+  id: string;
+  roomId: string;
+  authorId: string;
+  authorName: string;
+  strokes: Stroke[];
+  updatedAt?: unknown;
+}
+
 export interface Participant {
   uid: string;
   roomId: string;
@@ -86,6 +95,7 @@ export interface Question {
   wrongStudentIds: string[];
   winnerId: string;
   winnerName: string;
+  timerSeconds?: number;
   createdAt?: unknown;
   updatedAt?: unknown;
 }

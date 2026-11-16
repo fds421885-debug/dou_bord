@@ -222,6 +222,10 @@
           "type": "string",
           "maxLength": 120
         },
+        "timerSeconds": {
+          "type": "integer",
+          "description": "Optional per-question countdown duration in seconds (0 means unlimited)"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
@@ -242,6 +246,7 @@
         "wrongStudentIds",
         "winnerId",
         "winnerName",
+        "timerSeconds",
         "createdAt",
         "updatedAt"
       ]
@@ -452,6 +457,44 @@
       },
       "required": ["roomId", "strokes", "updatedBy", "updatedByName", "updatedAt"]
     },
+    "ExplainLayer": {
+      "title": "ExplainLayer",
+      "description": "Per-user drawing layer on the collaborative Explain Mode whiteboard",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "roomId": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 16,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "strokes": {
+          "type": "array"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "roomId", "authorId", "authorName", "strokes", "updatedAt"]
+    },
     "InteractiveSlide": {
       "title": "InteractiveSlide",
       "description": "Uploaded PDF page or image slide displayed full-screen in interactive mode",
@@ -560,6 +603,10 @@
     "/rooms/{roomId}/sharedBoard/{boardId}": {
       "schema": { "$ref": "#/entities/SharedExplainBoard" },
       "description": "Live synchronized explain whiteboard for the room"
+    },
+    "/rooms/{roomId}/explainLayers/{layerId}": {
+      "schema": { "$ref": "#/entities/ExplainLayer" },
+      "description": "Per-user collaborative annotation layers in Explain Mode"
     },
     "/rooms/{roomId}/slides/{slideId}": {
       "schema": { "$ref": "#/entities/InteractiveSlide" },
