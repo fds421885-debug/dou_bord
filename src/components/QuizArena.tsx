@@ -20,6 +20,8 @@ import {
   FileText,
   Flag,
   ImagePlus,
+  Maximize2,
+  Minimize2,
   PenTool,
   Presentation,
   Send,
@@ -58,6 +60,7 @@ import {
   renderStrokesToDataUrl,
   WhiteboardCanvas,
   WhiteboardPreview,
+  ZoomablePreviewStage,
 } from './WhiteboardCanvas';
 
 interface QuizArenaProps {
@@ -104,6 +107,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
   const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [finishingRoom, setFinishingRoom] = useState(false);
   const [gradingBusy, setGradingBusy] = useState(false);
+  const [studentFullscreen, setStudentFullscreen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
@@ -640,6 +644,12 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
     return { locked: false, title: '', subtitle: '' };
   }, [currentQuestion, myBoard?.submitted, myBoard?.verdict, profile.uid]);
 
+  useEffect(() => {
+    if (studentLockedInfo.locked) {
+      setStudentFullscreen(false);
+    }
+  }, [studentLockedInfo.locked, currentQuestion?.id]);
+
   const isExplainMode = room.mode === 'explain';
   const canDrawOnSharedBoard =
     isSupervisor || (isExplainMode && room.explainPresenterId === profile.uid);
@@ -967,12 +977,20 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 items-center">
-                <div className="lg:col-span-2">
+                <div className="lg:col-span-2 relative">
                   <WhiteboardPreview
                     strokes={activeReviewBoard.strokes || []}
                     backgroundImage={currentQuestion.imageData || undefined}
                     className="w-full aspect-[12/7]"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setInspectedBoard(activeReviewBoard)}
+                    className="duo-btn absolute bottom-3 left-3 flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/95 hover:bg-[#DDF4FF] border-2 border-[#E5E5E5] text-xs font-black text-[#1899D6] cursor-pointer shadow-sm"
+                  >
+                    <ZoomIn className="w-4 h-4" />
+                    <span>تكبير الحل والتفاصيل</span>
+                  </button>
                 </div>
                 <div className="flex flex-col gap-3">
                   <p className="text-sm font-bold text-[#3C3C3C]">
@@ -1416,13 +1434,75 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
         </div>
       ) : (
         /* ==================== STUDENT VIEW ==================== */
-        <div className="flex flex-col gap-4">
+        <div
+          className={
+            studentFullscreen
+              ? 'fixed inset-0 z-40 bg-white flex flex-col gap-2.5 p-2.5 sm:p-4 overflow-y-auto'
+              : 'flex flex-col gap-3 sm:gap-4'
+          }
+        >
+          {/* Student Compact Controls Bar (Question preview + Fullscreen toggle for easy zooming) */}
+          <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-2xl bg-[#F7F7F7] border-2 border-[#E5E5E5]">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              {currentQuestion ? (
+                <>
+                  <span className="font-latin px-2.5 py-0.5 rounded-lg bg-[#1CB0F6] text-white text-xs font-black shrink-0">
+                    س{currentQuestion.orderIndex}
+                  </span>
+                  <span className="text-xs sm:text-sm font-black text-[#3C3C3C] truncate">
+                    {currentQuestion.text || 'صفحة السؤال — يمكنك التكبير والتحريك بإصبعين أو بأزرار + / -'}
+                  </span>
+                </>
+              ) : (
+                <span className="text-xs sm:text-sm font-bold text-[#777777]">
+                  سبورتك الشخصية للحل
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              {currentQuestion?.imageData && (
+                <button
+                  type="button"
+                  onClick={() => setZoomedImage(currentQuestion.imageData)}
+                  className="duo-btn flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border-2 border-b-3 border-[#E5E5E5] text-xs font-black text-[#1899D6] cursor-pointer whitespace-nowrap"
+                >
+                  <ZoomIn className="w-3.5 h-3.5" />
+                  <span>تكبير الورقة</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setStudentFullscreen((prev) => !prev)}
+                className={`duo-btn flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-b-3 text-xs font-black cursor-pointer whitespace-nowrap ${
+                  studentFullscreen
+                    ? 'bg-[#FFC800] border-[#E5A400] text-[#3C3C3C]'
+                    : 'bg-white border-[#E5E5E5] text-[#3C3C3C]'
+                }`}
+              >
+                {studentFullscreen ? (
+                  <>
+                    <Minimize2 className="w-3.5 h-3.5" />
+                    <span>تصغير العرض</span>
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="w-3.5 h-3.5" />
+                    <span>ملء الشاشة</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
           <WhiteboardCanvas
             strokes={localStrokes}
             onStrokesChange={handleStrokesChange}
             backgroundImage={currentQuestion?.imageData || undefined}
             heightClass={
-              currentQuestion?.imageData
+              studentFullscreen
+                ? 'h-[calc(100dvh-235px)] sm:h-[calc(100dvh-205px)] min-h-[250px]'
+                : currentQuestion?.imageData
                 ? 'h-[310px] sm:h-[460px] md:h-[560px]'
                 : undefined
             }
@@ -1432,8 +1512,8 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
           />
 
           {/* Student Submit ("تم") Action Bar */}
-          <div className="duo-card p-4 flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div className="text-sm font-bold text-[#777777]">
+          <div className="duo-card p-3 sm:p-4 flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-4 shrink-0">
+            <div className="text-xs sm:text-sm font-bold text-[#777777]">
               {!currentQuestion
                 ? 'عند إدراج السؤال ستفتح سبورتك للحل فوراً.'
                 : studentLockedInfo.locked
@@ -1445,7 +1525,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
               type="button"
               disabled={studentLockedInfo.locked || submittingBoard}
               onClick={handleStudentSubmit}
-              className="duo-btn w-full sm:w-auto flex items-center justify-center gap-2.5 px-10 py-4 rounded-2xl bg-[#58CC02] hover:bg-[#61E002] border-2 border-[#46A302] border-b-[5px] text-white text-lg font-black cursor-pointer disabled:bg-[#E5E5E5] disabled:border-[#CFCFCF] disabled:text-[#AFAFAF] disabled:cursor-not-allowed whitespace-nowrap"
+              className="duo-btn w-full sm:w-auto flex items-center justify-center gap-2.5 px-8 sm:px-10 py-3.5 sm:py-4 rounded-2xl bg-[#58CC02] hover:bg-[#61E002] border-2 border-[#46A302] border-b-[5px] text-white text-base sm:text-lg font-black cursor-pointer disabled:bg-[#E5E5E5] disabled:border-[#CFCFCF] disabled:text-[#AFAFAF] disabled:cursor-not-allowed whitespace-nowrap"
             >
               <Check className="w-6 h-6 stroke-[3]" />
               <span>{submittingBoard ? 'جاري الإرسال...' : 'تم — إرسال الحل'}</span>
@@ -1459,15 +1539,17 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
       {/* Zoomed Question Image Modal */}
       {zoomedImage && (
         <div
-          className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-2.5 sm:p-4"
           onClick={() => setZoomedImage(null)}
         >
           <div
-            className="bg-white rounded-3xl p-4 max-w-4xl w-full flex flex-col gap-3"
+            className="bg-white rounded-3xl p-3 sm:p-4 max-w-5xl w-full flex flex-col gap-3 max-h-[95dvh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex justify-between items-center">
-              <span className="font-black text-[#3C3C3C]">معاينة صورة السؤال</span>
+              <span className="font-black text-sm sm:text-base text-[#3C3C3C]">
+                معاينة وتكبير الصفحة / السؤال
+              </span>
               <button
                 type="button"
                 onClick={() => setZoomedImage(null)}
@@ -1476,11 +1558,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <img
-              src={zoomedImage}
-              alt="صورة السؤال مكبرة"
-              className="max-h-[75vh] w-auto mx-auto object-contain rounded-xl"
-            />
+            <ZoomablePreviewStage imageSrc={zoomedImage} />
           </div>
         </div>
       )}
@@ -1488,29 +1566,28 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
       {/* Inspected Student Board Modal */}
       {inspectedBoard && (
         <div
-          className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-2.5 sm:p-4"
           onClick={() => setInspectedBoard(null)}
         >
           <div
-            className="bg-white rounded-3xl p-5 max-w-4xl w-full flex flex-col gap-4"
+            className="bg-white rounded-3xl p-3.5 sm:p-5 max-w-5xl w-full flex flex-col gap-3 sm:gap-4 max-h-[95dvh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex justify-between items-center">
-              <h3 className="text-lg font-black text-[#3C3C3C]">
+              <h3 className="text-base sm:text-lg font-black text-[#3C3C3C] truncate">
                 سبورة الطالب: {inspectedBoard.studentName}
               </h3>
               <button
                 type="button"
                 onClick={() => setInspectedBoard(null)}
-                className="p-2 rounded-xl bg-[#F7F7F7] hover:bg-[#FFDFE0] text-[#3C3C3C] cursor-pointer"
+                className="p-2 rounded-xl bg-[#F7F7F7] hover:bg-[#FFDFE0] text-[#3C3C3C] cursor-pointer shrink-0"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <WhiteboardPreview
+            <ZoomablePreviewStage
+              imageSrc={currentQuestion?.imageData || undefined}
               strokes={inspectedBoard.strokes || []}
-              backgroundImage={currentQuestion?.imageData || undefined}
-              className="w-full aspect-[12/7]"
             />
           </div>
         </div>

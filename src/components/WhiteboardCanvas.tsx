@@ -174,6 +174,25 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   const [zoom, setZoom] = useState<number>(1);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
+  const zoomRef = useRef<number>(1);
+  const panRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
+  useEffect(() => {
+    panRef.current = pan;
+  }, [pan]);
+
+  const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchStartRef = useRef<{
+    dist: number;
+    zoom: number;
+    midX: number;
+    midY: number;
+    origPanX: number;
+    origPanY: number;
+  } | null>(null);
+
   const isDrawingRef = useRef(false);
   const isPanningRef = useRef(false);
   const panStartRef = useRef<{ x: number; y: number; origX: number; origY: number }>({
@@ -242,6 +261,30 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    // 2-finger pinch-to-zoom & pan on touchscreens
+    if (pointersRef.current.size === 2) {
+      isDrawingRef.current = false;
+      activeStrokeRef.current = null;
+      isPanningRef.current = false;
+      redraw();
+
+      const pts = Array.from(pointersRef.current.values()) as Array<{ x: number; y: number }>;
+      const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+      const midX = (pts[0].x + pts[1].x) / 2;
+      const midY = (pts[0].y + pts[1].y) / 2;
+      pinchStartRef.current = {
+        dist: Math.max(dist, 10),
+        zoom: zoomRef.current,
+        midX,
+        midY,
+        origPanX: panRef.current.x,
+        origPanY: panRef.current.y,
+      };
+      return;
+    }
+
     if (disabled || viewOnly) {
       if (tool === 'pan' || viewOnly || e.button === 1) {
         isPanningRef.current = true;
@@ -283,6 +326,28 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (pointersRef.current.has(e.pointerId)) {
+      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+
+    if (pointersRef.current.size === 2 && pinchStartRef.current) {
+      const pts = Array.from(pointersRef.current.values()) as Array<{ x: number; y: number }>;
+      const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+      const midX = (pts[0].x + pts[1].x) / 2;
+      const midY = (pts[0].y + pts[1].y) / 2;
+      const start = pinchStartRef.current;
+      const nextZoom = Math.max(
+        0.5,
+        Math.min(4.0, Number((start.zoom * (dist / start.dist)).toFixed(2)))
+      );
+      setZoom(nextZoom);
+      setPan({
+        x: start.origPanX + (midX - start.midX),
+        y: start.origPanY + (midY - start.midY),
+      });
+      return;
+    }
+
     if (isPanningRef.current) {
       const dx = e.clientX - panStartRef.current.x;
       const dy = e.clientY - panStartRef.current.y;
@@ -317,7 +382,12 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     }
   };
 
-  const finishStroke = () => {
+  const finishStroke = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    pointersRef.current.delete(e.pointerId);
+    if (pointersRef.current.size < 2) {
+      pinchStartRef.current = null;
+    }
+
     if (isPanningRef.current) {
       isPanningRef.current = false;
       return;
@@ -330,6 +400,13 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     localStrokesRef.current = next;
     redraw();
     onStrokesChange(next);
+  };
+
+  const handleWheelZoom = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (!e.ctrlKey && !e.metaKey && tool !== 'pan' && !viewOnly) return;
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 0.15 : -0.15;
+    setZoom((z) => Math.max(0.5, Math.min(4.0, Number((z + delta).toFixed(2)))));
   };
 
   const handleUndo = () => {
@@ -347,8 +424,8 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     onStrokesChange([]);
   };
 
-  const handleZoomIn = () => setZoom((z) => Math.min(2.6, Number((z + 0.25).toFixed(2))));
-  const handleZoomOut = () => setZoom((z) => Math.max(0.6, Number((z - 0.25).toFixed(2))));
+  const handleZoomIn = () => setZoom((z) => Math.min(4.0, Number((z + 0.25).toFixed(2))));
+  const handleZoomOut = () => setZoom((z) => Math.max(0.5, Number((z - 0.25).toFixed(2))));
   const handleResetView = () => {
     setZoom(1);
     setPan({ x: 0, y: 0 });
@@ -528,13 +605,14 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       {/* Whiteboard Viewport */}
       <div
         ref={viewportRef}
+        onWheel={handleWheelZoom}
         className={`relative w-full ${heightClass} rounded-2xl border-2 border-[#E5E5E5] border-b-4 whiteboard-grid overflow-hidden flex items-center justify-center touch-none select-none`}
       >
         <div
           style={{
             transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
             transformOrigin: 'center center',
-            transition: isPanningRef.current ? 'none' : 'transform 0.12s ease-out',
+            transition: isPanningRef.current || pinchStartRef.current ? 'none' : 'transform 0.12s ease-out',
             containerType: 'size',
           }}
           className="w-full h-full flex items-center justify-center p-1 sm:p-2"
@@ -586,6 +664,148 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
             <p className="text-xs sm:text-sm font-bold text-[#777777] max-w-md">{lockSubtitle}</p>
           </div>
         )}
+      </div>
+    </div>
+  );
+};
+
+export const ZoomablePreviewStage: React.FC<{
+  imageSrc?: string;
+  strokes?: Stroke[];
+}> = ({ imageSrc, strokes }) => {
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const draggingRef = useRef(false);
+  const startRef = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
+  const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchRef = useRef<{
+    dist: number;
+    zoom: number;
+    midX: number;
+    midY: number;
+    ox: number;
+    oy: number;
+  } | null>(null);
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size === 2) {
+      draggingRef.current = false;
+      const pts = Array.from(pointersRef.current.values()) as Array<{ x: number; y: number }>;
+      pinchRef.current = {
+        dist: Math.max(Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y), 10),
+        zoom,
+        midX: (pts[0].x + pts[1].x) / 2,
+        midY: (pts[0].y + pts[1].y) / 2,
+        ox: pan.x,
+        oy: pan.y,
+      };
+      return;
+    }
+    draggingRef.current = true;
+    startRef.current = { x: e.clientX, y: e.clientY, ox: pan.x, oy: pan.y };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (pointersRef.current.has(e.pointerId)) {
+      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+    if (pointersRef.current.size === 2 && pinchRef.current) {
+      const pts = Array.from(pointersRef.current.values()) as Array<{ x: number; y: number }>;
+      const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+      const midX = (pts[0].x + pts[1].x) / 2;
+      const midY = (pts[0].y + pts[1].y) / 2;
+      const p = pinchRef.current;
+      setZoom(Math.max(0.5, Math.min(4.0, Number((p.zoom * (dist / p.dist)).toFixed(2)))));
+      setPan({ x: p.ox + (midX - p.midX), y: p.oy + (midY - p.midY) });
+      return;
+    }
+    if (!draggingRef.current) return;
+    setPan({
+      x: startRef.current.ox + (e.clientX - startRef.current.x),
+      y: startRef.current.oy + (e.clientY - startRef.current.y),
+    });
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    pointersRef.current.delete(e.pointerId);
+    if (pointersRef.current.size < 2) pinchRef.current = null;
+    draggingRef.current = false;
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 bg-[#F7F7F7] border-2 border-[#E5E5E5] rounded-xl px-3 py-2">
+        <span className="text-xs font-bold text-[#777777]">
+          اسحب للتحريك أو استخدم أزرار التكبير والتصغير
+        </span>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setZoom((z) => Math.max(0.5, Number((z - 0.25).toFixed(2))))}
+            className="duo-btn p-1.5 rounded-lg bg-white border border-[#E5E5E5] text-[#3C3C3C] hover:bg-[#F0F0F0] cursor-pointer"
+            title="تصغير"
+          >
+            <ZoomOut className="w-4 h-4" />
+          </button>
+          <span className="font-latin text-xs font-black text-[#3C3C3C] min-w-[44px] text-center">
+            {Math.round(zoom * 100)}%
+          </span>
+          <button
+            type="button"
+            onClick={() => setZoom((z) => Math.min(4.0, Number((z + 0.25).toFixed(2))))}
+            className="duo-btn p-1.5 rounded-lg bg-white border border-[#E5E5E5] text-[#3C3C3C] hover:bg-[#F0F0F0] cursor-pointer"
+            title="تكبير"
+          >
+            <ZoomIn className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setZoom(1);
+              setPan({ x: 0, y: 0 });
+            }}
+            className="duo-btn px-2.5 py-1 rounded-lg bg-white border border-[#E5E5E5] text-xs font-black text-[#777777] hover:text-[#3C3C3C] cursor-pointer"
+          >
+            إعادة ضبط
+          </button>
+        </div>
+      </div>
+
+      <div
+        onWheel={(e) => {
+          e.preventDefault();
+          const delta = e.deltaY < 0 ? 0.2 : -0.2;
+          setZoom((z) => Math.max(0.5, Math.min(4.0, Number((z + delta).toFixed(2)))));
+        }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        className="w-full h-[60dvh] sm:h-[70dvh] rounded-2xl border-2 border-[#E5E5E5] bg-[#F7F7F7] overflow-hidden flex items-center justify-center touch-none select-none cursor-grab active:cursor-grabbing"
+      >
+        <div
+          style={{
+            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+            transformOrigin: 'center center',
+          }}
+          className="w-full h-full flex items-center justify-center p-2"
+        >
+          {strokes ? (
+            <WhiteboardPreview
+              strokes={strokes}
+              backgroundImage={imageSrc}
+              className="w-full max-w-3xl aspect-[12/7]"
+            />
+          ) : (
+            <img
+              src={imageSrc}
+              alt="معاينة مكبرة"
+              className="max-h-full max-w-full object-contain rounded-xl pointer-events-none select-none"
+            />
+          )}
+        </div>
       </div>
     </div>
   );

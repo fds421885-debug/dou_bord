@@ -32,7 +32,7 @@ import {
   DuoCrownIcon,
   DuoGemIcon,
 } from './DuoIcons';
-import { WhiteboardPreview } from './WhiteboardCanvas';
+import { WhiteboardPreview, ZoomablePreviewStage } from './WhiteboardCanvas';
 
 interface TestResultsViewProps {
   profile: UserProfile;
@@ -528,29 +528,28 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
       {/* Zoomed Board Modal */}
       {zoomedBoard && (
         <div
-          className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-2.5 sm:p-4"
           onClick={() => setZoomedBoard(null)}
         >
           <div
-            className="bg-white rounded-3xl p-5 max-w-4xl w-full flex flex-col gap-4"
+            className="bg-white rounded-3xl p-3.5 sm:p-5 max-w-5xl w-full flex flex-col gap-3 sm:gap-4 max-h-[95dvh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex justify-between items-center">
-              <h3 className="text-lg font-black text-[#3C3C3C]">
+              <h3 className="text-base sm:text-lg font-black text-[#3C3C3C] truncate">
                 سبورة: {zoomedBoard.board.studentName}
               </h3>
               <button
                 type="button"
                 onClick={() => setZoomedBoard(null)}
-                className="p-2 rounded-xl bg-[#F7F7F7] hover:bg-[#FFDFE0] text-[#3C3C3C] cursor-pointer"
+                className="p-2 rounded-xl bg-[#F7F7F7] hover:bg-[#FFDFE0] text-[#3C3C3C] cursor-pointer shrink-0"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <WhiteboardPreview
+            <ZoomablePreviewStage
+              imageSrc={zoomedBoard.backgroundImage}
               strokes={zoomedBoard.board.strokes || []}
-              backgroundImage={zoomedBoard.backgroundImage}
-              className="w-full aspect-[12/7]"
             />
           </div>
         </div>
@@ -559,28 +558,26 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
       {/* Zoomed Question Image Modal */}
       {zoomedImg && (
         <div
-          className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-2.5 sm:p-4"
           onClick={() => setZoomedImg(null)}
         >
           <div
-            className="bg-white rounded-3xl p-4 max-w-4xl w-full flex flex-col gap-3"
+            className="bg-white rounded-3xl p-3 sm:p-4 max-w-5xl w-full flex flex-col gap-3 max-h-[95dvh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex justify-between items-center">
-              <span className="font-black text-[#3C3C3C]">صورة السؤال</span>
+              <span className="font-black text-sm sm:text-base text-[#3C3C3C]">
+                معاينة وتكبير الصفحة / الصورة
+              </span>
               <button
                 type="button"
                 onClick={() => setZoomedImg(null)}
-                className="p-2 rounded-xl bg-[#F7F7F7] hover:bg-[#FFDFE0] text-[#3C3C3C] cursor-pointer"
+                className="p-2 rounded-xl bg-[#F7F7F7] hover:bg-[#FFDFE0] text-[#3C3C3C] cursor-pointer shrink-0"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <img
-              src={zoomedImg}
-              alt="صورة السؤال"
-              className="max-h-[75vh] w-auto mx-auto object-contain rounded-xl"
-            />
+            <ZoomablePreviewStage imageSrc={zoomedImg} />
           </div>
         </div>
       )}
