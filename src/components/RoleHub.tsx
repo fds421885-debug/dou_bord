@@ -202,9 +202,9 @@ export const RoleHub: React.FC<RoleHubProps> = ({
   };
 
   return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 flex flex-col gap-8">
+    <div className="max-w-5xl mx-auto px-3 sm:px-6 py-5 sm:py-8 flex flex-col gap-5 sm:gap-8">
       {/* Greeting & Quad Name Bar */}
-      <div className="duo-card p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-[#F7F7F7]">
+      <div className="duo-card p-4 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 bg-[#F7F7F7]">
         <div className="flex flex-col gap-1">
           <span className="text-xs font-extrabold text-[#777777]">مرحباً بك في منصة السبورة التفاعلية</span>
           {editingName ? (
@@ -213,7 +213,7 @@ export const RoleHub: React.FC<RoleHubProps> = ({
                 type="text"
                 value={editedName}
                 onChange={(e) => setEditedName(e.target.value)}
-                className="px-3 py-1.5 rounded-xl bg-white border-2 border-[#1CB0F6] text-base font-extrabold text-[#3C3C3C] outline-none min-w-[240px]"
+                className="px-3 py-1.5 rounded-xl bg-white border-2 border-[#1CB0F6] text-base font-extrabold text-[#3C3C3C] outline-none w-full sm:w-auto sm:min-w-[240px]"
               />
               <button
                 type="button"
@@ -271,11 +271,11 @@ export const RoleHub: React.FC<RoleHubProps> = ({
           onSubmit={handleCreateSupervisorRoom}
           className="duo-card p-6 sm:p-8 flex flex-col justify-between gap-6"
         >
-          <div className="flex flex-col items-center text-center gap-4">
+          <div className="flex flex-col items-center text-center gap-3 sm:gap-4">
             <DuoArtwork
               src={DUO_IMAGES.supervisor}
               alt="شخصية المشرف"
-              className="w-32 h-32"
+              className="w-24 h-24 sm:w-32 sm:h-32"
             />
             <div>
               <h2 className="text-2xl font-black text-[#3C3C3C] mb-1">دخول كمشرف</h2>
@@ -388,11 +388,11 @@ export const RoleHub: React.FC<RoleHubProps> = ({
           onSubmit={handleJoinAsStudent}
           className="duo-card p-6 sm:p-8 flex flex-col justify-between gap-6"
         >
-          <div className="flex flex-col items-center text-center gap-4">
+          <div className="flex flex-col items-center text-center gap-3 sm:gap-4">
             <DuoArtwork
               src={DUO_IMAGES.student}
               alt="شخصية الطالب"
-              className="w-32 h-32"
+              className="w-24 h-24 sm:w-32 sm:h-32"
             />
             <div>
               <h2 className="text-2xl font-black text-[#3C3C3C] mb-1">دخول كطالب</h2>

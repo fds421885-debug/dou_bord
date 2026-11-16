@@ -182,31 +182,31 @@ export default function App() {
 
   return (
     <AppErrorBoundary>
-      <div className="min-h-screen bg-[#FFFFFF] flex flex-col">
+      <div className="min-h-screen bg-[#FFFFFF] flex flex-col overflow-x-hidden">
         {/* Clean 3-Zone Duolingo Top Navigation Bar */}
         <header className="border-b-2 border-[#E5E5E5] bg-white sticky top-0 z-30">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
+          <div className="max-w-7xl mx-auto px-3 sm:px-6 h-14 sm:h-16 flex items-center justify-between gap-2 sm:gap-6 md:gap-8">
             {/* Zone 1: Brand Wordmark */}
             <button
               type="button"
               onClick={() => {
                 if (!activeRoomId) setTab('home');
               }}
-              className="flex items-center gap-2.5 whitespace-nowrap shrink-0 cursor-pointer"
+              className="flex items-center gap-1.5 sm:gap-2.5 whitespace-nowrap shrink-0 cursor-pointer"
             >
-              <DuoOwlEmblem className="w-8 h-8" />
-              <span className="font-latin text-2xl font-black tracking-tight text-[#58CC02]">
+              <DuoOwlEmblem className="w-7 h-7 sm:w-8 sm:h-8" />
+              <span className="font-latin text-lg sm:text-2xl font-black tracking-tight text-[#58CC02]">
                 DuoBoard
               </span>
             </button>
 
             {/* Zone 2: Navigation Links */}
             {!activeRoomId ? (
-              <nav className="flex items-center gap-4 sm:gap-6 text-sm font-black">
+              <nav className="flex items-center gap-3 sm:gap-6 text-xs sm:text-sm font-black">
                 <button
                   type="button"
                   onClick={() => setTab('home')}
-                  className={`flex items-center gap-1.5 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  className={`flex items-center gap-1 sm:gap-1.5 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                     tab === 'home'
                       ? 'border-[#58CC02] text-[#58CC02]'
                       : 'border-transparent text-[#777777] hover:text-[#3C3C3C]'
@@ -218,19 +218,20 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setTab('saved')}
-                  className={`flex items-center gap-1.5 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  className={`flex items-center gap-1 sm:gap-1.5 py-2 border-b-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                     tab === 'saved'
                       ? 'border-[#1CB0F6] text-[#1899D6]'
                       : 'border-transparent text-[#777777] hover:text-[#3C3C3C]'
                   }`}
                 >
                   <Archive className="w-4 h-4" />
-                  <span>اختباراتي المحفوظة</span>
+                  <span className="sm:hidden">اختباراتي</span>
+                  <span className="hidden sm:inline">اختباراتي المحفوظة</span>
                 </button>
               </nav>
             ) : (
-              <div className="hidden sm:flex items-center gap-2 text-sm font-black text-[#3C3C3C] truncate">
-                <span>{room?.title ?? 'غرفة الاختبار'}</span>
+              <div className="flex items-center gap-2 text-xs sm:text-sm font-black text-[#3C3C3C] truncate max-w-[140px] sm:max-w-md">
+                <span className="truncate">{room?.title ?? 'غرفة الاختبار'}</span>
               </div>
             )}
 
@@ -243,18 +244,20 @@ export default function App() {
                     setActiveRoomId(null);
                     setTab('home');
                   }}
-                  className="duo-btn px-4 py-2 rounded-xl bg-white border-2 border-b-4 border-[#E5E5E5] text-xs font-black text-[#777777] hover:text-[#3C3C3C] whitespace-nowrap shrink-0 cursor-pointer"
+                  className="duo-btn px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-xl bg-white border-2 border-b-4 border-[#E5E5E5] text-[11px] sm:text-xs font-black text-[#777777] hover:text-[#3C3C3C] whitespace-nowrap shrink-0 cursor-pointer"
                 >
-                  مغادرة الغرفة
+                  <span className="sm:hidden">مغادرة</span>
+                  <span className="hidden sm:inline">مغادرة الغرفة</span>
                 </button>
               ) : (
                 <button
                   type="button"
                   onClick={() => void signOut(auth)}
-                  className="duo-btn flex items-center gap-1.5 px-4 py-2 rounded-xl bg-white border-2 border-b-4 border-[#E5E5E5] text-xs font-black text-[#777777] hover:text-[#EA2B2B] whitespace-nowrap shrink-0 cursor-pointer"
+                  className="duo-btn flex items-center gap-1.5 px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-xl bg-white border-2 border-b-4 border-[#E5E5E5] text-[11px] sm:text-xs font-black text-[#777777] hover:text-[#EA2B2B] whitespace-nowrap shrink-0 cursor-pointer"
                 >
-                  <LogOut className="w-4 h-4" />
-                  <span>تسجيل الخروج</span>
+                  <LogOut className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                  <span className="sm:hidden">خروج</span>
+                  <span className="hidden sm:inline">تسجيل الخروج</span>
                 </button>
               )}
             </div>

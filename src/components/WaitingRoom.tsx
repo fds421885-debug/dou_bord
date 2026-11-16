@@ -50,14 +50,14 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
   };
 
   return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 flex flex-col gap-6">
+    <div className="max-w-5xl mx-auto px-3 sm:px-6 py-5 sm:py-8 flex flex-col gap-5 sm:gap-6">
       {/* Header Card with Room Code */}
-      <div className="duo-card p-6 sm:p-8 flex flex-col md:flex-row items-center justify-between gap-6">
-        <div className="flex flex-col sm:flex-row items-center gap-5 text-center sm:text-right">
+      <div className="duo-card p-4 sm:p-8 flex flex-col md:flex-row items-center justify-between gap-5 sm:gap-6">
+        <div className="flex flex-col sm:flex-row items-center gap-4 sm:gap-5 text-center sm:text-right">
           <DuoArtwork
             src={isSupervisor ? DUO_IMAGES.supervisor : DUO_IMAGES.student}
             alt="أيقونة غرفة الانتظار"
-            className="w-24 h-24 shrink-0"
+            className="w-20 h-20 sm:w-24 sm:h-24 shrink-0"
           />
           <div className="flex flex-col gap-1.5">
             <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
@@ -76,7 +76,7 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
                   : 'وضع اختبار'}
               </span>
             </div>
-            <h1 className="text-2xl sm:text-3xl font-black text-[#3C3C3C]">
+            <h1 className="text-xl sm:text-3xl font-black text-[#3C3C3C]">
               {room.title}
             </h1>
             <p className="text-sm font-bold text-[#777777]">
@@ -86,7 +86,7 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
         </div>
 
         {/* Room Code Box */}
-        <div className="flex flex-col items-center gap-2 bg-[#F7F7F7] border-2 border-[#E5E5E5] rounded-2xl px-6 py-4 min-w-[230px]">
+        <div className="flex flex-col items-center gap-2 bg-[#F7F7F7] border-2 border-[#E5E5E5] rounded-2xl px-5 py-3.5 sm:px-6 sm:py-4 w-full sm:w-auto sm:min-w-[230px]">
           <span className="text-xs font-extrabold text-[#777777]">رمز الغرفة</span>
           <div className="flex items-center gap-3">
             <span
@@ -154,11 +154,11 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
         )}
 
         {/* Action Footer */}
-        <div className="pt-4 border-t-2 border-[#F0F0F0] flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div className="pt-4 border-t-2 border-[#F0F0F0] flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-4">
           <button
             type="button"
             onClick={onLeaveRoom}
-            className="duo-btn px-5 py-3 rounded-2xl bg-white border-2 border-b-4 border-[#E5E5E5] text-sm font-extrabold text-[#777777] hover:text-[#3C3C3C] cursor-pointer whitespace-nowrap"
+            className="duo-btn w-full sm:w-auto px-5 py-3 rounded-2xl bg-white border-2 border-b-4 border-[#E5E5E5] text-sm font-extrabold text-[#777777] hover:text-[#3C3C3C] cursor-pointer whitespace-nowrap"
           >
             الخروج من الغرفة
           </button>
@@ -168,7 +168,7 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
               type="button"
               disabled={starting}
               onClick={handleStartSession}
-              className="duo-btn w-full sm:w-auto flex items-center justify-center gap-2.5 px-8 py-4 rounded-2xl bg-[#58CC02] hover:bg-[#61E002] border-2 border-[#46A302] border-b-[5px] text-white text-lg font-black cursor-pointer disabled:opacity-60 whitespace-nowrap"
+              className="duo-btn w-full sm:w-auto flex items-center justify-center gap-2.5 px-6 sm:px-8 py-4 rounded-2xl bg-[#58CC02] hover:bg-[#61E002] border-2 border-[#46A302] border-b-[5px] text-white text-base sm:text-lg font-black cursor-pointer disabled:opacity-60 whitespace-nowrap"
             >
               <Play className="w-5 h-5 fill-current" />
               <span>

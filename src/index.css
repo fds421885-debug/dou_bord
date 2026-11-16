@@ -22,10 +22,13 @@
     --duo-surface: #f7f7f7;
   }
 
+  html,
   body {
     font-family: 'Cairo', 'Nunito', system-ui, -apple-system, sans-serif;
     background-color: #ffffff;
     color: #3c3c3c;
+    overflow-x: hidden;
+    -webkit-tap-highlight-color: transparent;
   }
 }
 

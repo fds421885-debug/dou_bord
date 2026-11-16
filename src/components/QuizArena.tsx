@@ -653,7 +653,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
     : 15;
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-5 flex flex-col gap-5">
+    <div className="max-w-7xl mx-auto px-2.5 sm:px-6 py-4 sm:py-5 flex flex-col gap-4 sm:gap-5">
       {/* Arena Top Strip */}
       <div className="duo-card p-4 flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-4 flex-1 min-w-[220px]">
@@ -818,7 +818,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
             onStrokesChange={(next) => void handleSharedStrokesChange(next)}
             viewOnly={!canDrawOnSharedBoard}
             syncIntervalMs={220}
-            heightClass="h-[460px] md:h-[560px]"
+            heightClass="h-[300px] sm:h-[440px] md:h-[540px]"
           />
         </div>
       ) : (
@@ -888,12 +888,12 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
               <button
                 type="button"
                 onClick={() => setZoomedImage(currentQuestion.imageData)}
-                className="group relative rounded-2xl overflow-hidden border-2 border-[#E5E5E5] bg-[#F7F7F7] max-w-md cursor-pointer shrink-0"
+                className="group relative rounded-2xl overflow-hidden border-2 border-[#E5E5E5] bg-[#F7F7F7] w-full sm:w-auto sm:max-w-md cursor-pointer shrink-0 flex justify-center"
               >
                 <img
                   src={currentQuestion.imageData}
                   alt="صورة السؤال"
-                  className="max-h-64 w-auto object-contain"
+                  className="max-h-56 sm:max-h-64 w-auto object-contain"
                 />
                 <span className="absolute bottom-2 left-2 bg-black/70 text-white text-xs font-bold px-2.5 py-1 rounded-lg flex items-center gap-1">
                   <ZoomIn className="w-3.5 h-3.5" />
@@ -1001,7 +1001,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                 </div>
 
                 {/* Mode Tabs: Text/Image, PDF Page Picker, OR Supervisor's Private Whiteboard */}
-                <div className="flex flex-wrap items-center gap-1 p-1 bg-[#F7F7F7] border-2 border-[#E5E5E5] rounded-xl">
+                <div className="flex items-center gap-1 p-1 bg-[#F7F7F7] border-2 border-[#E5E5E5] rounded-xl w-full sm:w-auto overflow-x-auto">
                   <button
                     type="button"
                     onClick={() => setComposerTab('text')}
@@ -1262,7 +1262,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                   <WhiteboardCanvas
                     strokes={draftBoardStrokes}
                     onStrokesChange={setDraftBoardStrokes}
-                    heightClass="h-[340px] md:h-[400px]"
+                    heightClass="h-[250px] sm:h-[340px] md:h-[400px]"
                   />
                 </div>
               )}
@@ -1271,7 +1271,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                 <p className="text-sm font-extrabold text-[#EA2B2B]">{draftError}</p>
               )}
 
-              <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <span className="text-xs font-bold text-[#777777]">
                   {composerTab === 'pdf' && pdfPages.length > 0
                     ? `ستظهر الصفحة رقم ${selectedPdfPage} فقط للطلاب ليبدأوا الحل على سبوراتهم`
@@ -1282,7 +1282,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                 <button
                   type="submit"
                   disabled={insertingQuestion || pdfLoading}
-                  className="duo-btn flex items-center gap-2.5 px-8 py-3.5 rounded-2xl bg-[#58CC02] hover:bg-[#61E002] border-2 border-[#46A302] border-b-[5px] text-white text-base font-black cursor-pointer disabled:opacity-60"
+                  className="duo-btn w-full sm:w-auto flex items-center justify-center gap-2.5 px-6 sm:px-8 py-3.5 rounded-2xl bg-[#58CC02] hover:bg-[#61E002] border-2 border-[#46A302] border-b-[5px] text-white text-sm sm:text-base font-black cursor-pointer disabled:opacity-60"
                 >
                   {composerTab === 'pdf' && pdfPages.length > 0 ? (
                     <Eye className="w-5 h-5" />

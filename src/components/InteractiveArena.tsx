@@ -481,8 +481,8 @@ export const InteractiveArena: React.FC<InteractiveArenaProps> = ({
     <div
       className={
         isFullscreen
-          ? 'fixed inset-0 z-40 bg-white flex flex-col gap-3 p-3 sm:p-4 overflow-y-auto'
-          : 'max-w-[1440px] mx-auto px-3 sm:px-6 py-4 flex flex-col gap-4'
+          ? 'fixed inset-0 z-40 bg-white flex flex-col gap-2.5 sm:gap-3 p-2.5 sm:p-4 overflow-y-auto'
+          : 'max-w-[1440px] mx-auto px-2.5 sm:px-6 py-3 sm:py-5 flex flex-col gap-3 sm:gap-4'
       }
     >
       {/* Hidden file input for PDF or Images */}
@@ -609,16 +609,16 @@ export const InteractiveArena: React.FC<InteractiveArenaProps> = ({
 
         {/* Supervisor Collaborative Permission Selector */}
         {isSupervisor && slides.length > 0 && (
-          <div className="pt-2.5 border-t-2 border-[#F0F0F0] flex flex-wrap items-center gap-2">
-            <span className="text-xs font-black text-[#3C3C3C] ml-1">
-              السماح بالكتابة والحل على الملف:
+          <div className="pt-2.5 border-t-2 border-[#F0F0F0] flex flex-nowrap sm:flex-wrap items-center gap-2 overflow-x-auto pb-1 sm:pb-0">
+            <span className="text-xs font-black text-[#3C3C3C] ml-1 shrink-0">
+              من يكتب الآن:
             </span>
 
             <button
               type="button"
               disabled={updatingEditor}
               onClick={() => handleSetInteractiveEditor('supervisor', profile.fullNameQuad)}
-              className={`duo-btn flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-b-3 text-xs font-black cursor-pointer ${
+              className={`duo-btn flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-b-3 text-xs font-black cursor-pointer shrink-0 ${
                 room.interactiveEditor === 'supervisor'
                   ? 'bg-[#3C3C3C] border-[#1F2937] text-white'
                   : 'bg-[#F7F7F7] border-[#E5E5E5] text-[#3C3C3C]'
@@ -632,7 +632,7 @@ export const InteractiveArena: React.FC<InteractiveArenaProps> = ({
               type="button"
               disabled={updatingEditor}
               onClick={() => handleSetInteractiveEditor('all', 'الجميع')}
-              className={`duo-btn flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-b-3 text-xs font-black cursor-pointer ${
+              className={`duo-btn flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-b-3 text-xs font-black cursor-pointer shrink-0 ${
                 room.interactiveEditor === 'all'
                   ? 'bg-[#58CC02] border-[#46A302] text-white'
                   : 'bg-[#F7F7F7] border-[#E5E5E5] text-[#3C3C3C]'
@@ -650,14 +650,14 @@ export const InteractiveArena: React.FC<InteractiveArenaProps> = ({
                   type="button"
                   disabled={updatingEditor}
                   onClick={() => handleSetInteractiveEditor(p.uid, p.fullNameQuad)}
-                  className={`duo-btn flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-b-3 text-xs font-black cursor-pointer ${
+                  className={`duo-btn flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-b-3 text-xs font-black cursor-pointer shrink-0 ${
                     selected
                       ? 'bg-[#FFC800] border-[#E5A400] text-[#3C3C3C]'
                       : 'bg-white border-[#E5E5E5] text-[#777777] hover:text-[#3C3C3C]'
                   }`}
                 >
                   <PenTool className="w-3.5 h-3.5" />
-                  <span className="max-w-[160px] truncate">{p.fullNameQuad}</span>
+                  <span className="max-w-[140px] truncate">{p.fullNameQuad}</span>
                 </button>
               );
             })}
@@ -811,8 +811,8 @@ export const InteractiveArena: React.FC<InteractiveArenaProps> = ({
             syncIntervalMs={240}
             heightClass={
               isFullscreen
-                ? 'h-[calc(100vh-225px)] min-h-[440px]'
-                : 'h-[68vh] min-h-[480px] md:h-[74vh]'
+                ? 'h-[calc(100dvh-235px)] sm:h-[calc(100dvh-205px)] min-h-[240px]'
+                : 'h-[48dvh] min-h-[240px] sm:h-[64dvh] md:h-[72dvh]'
             }
           />
 

@@ -162,7 +162,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   syncIntervalMs = 550,
   lockTitle = 'السبورة مقفلة حالياً',
   lockSubtitle = 'بانتظار المشرف لإدراج السؤال',
-  heightClass = 'h-[430px] md:h-[520px]',
+  heightClass = 'h-[250px] sm:h-[380px] md:h-[490px] lg:h-[540px]',
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -355,18 +355,18 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   };
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-2.5 sm:gap-3">
       {/* Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 bg-[#F7F7F7] border-2 border-[#E5E5E5] rounded-2xl p-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 bg-[#F7F7F7] border-2 border-[#E5E5E5] rounded-2xl p-2 sm:p-2.5">
         {viewOnly ? (
-          <div className="flex items-center gap-2 px-2 py-1 text-xs font-black text-[#1899D6]">
+          <div className="flex items-center gap-2 px-2 py-1 text-[11px] sm:text-xs font-black text-[#1899D6]">
             <span>وضع المشاهدة المباشرة — يمكنك التكبير أو التحريك لمتابعة الشرح</span>
           </div>
         ) : (
         /* Colors & Tools */
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
           {/* 3 Mandatory Colors: Black, Red, Green */}
-          <div className="flex items-center gap-1.5 bg-white border-2 border-[#E5E5E5] rounded-xl px-2 py-1.5">
+          <div className="flex items-center gap-1 bg-white border-2 border-[#E5E5E5] rounded-xl px-1.5 sm:px-2 py-1">
             {PEN_COLORS.map((c) => {
               const active = tool === 'pen' && color === c.hex;
               return (
@@ -379,14 +379,14 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
                     setTool('pen');
                   }}
                   title={c.label}
-                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-extrabold transition-all whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 ${
+                  className={`flex items-center gap-1 px-2 sm:px-2.5 py-1.5 rounded-lg text-[11px] sm:text-xs font-extrabold transition-all whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 ${
                     active
                       ? 'bg-[#E5F7FF] text-[#1899D6] ring-2 ring-[#1CB0F6]'
                       : 'text-[#3C3C3C] hover:bg-[#F7F7F7]'
                   }`}
                 >
                   <span
-                    className="w-4 h-4 rounded-full border-2 border-white shadow-sm shrink-0"
+                    className="w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full border-2 border-white shadow-sm shrink-0"
                     style={{ backgroundColor: c.hex }}
                   />
                   <span>{c.label}</span>
@@ -396,7 +396,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
           </div>
 
           {/* Pen Sizes */}
-          <div className="flex items-center gap-1 bg-white border-2 border-[#E5E5E5] rounded-xl px-2 py-1.5">
+          <div className="flex items-center gap-1 bg-white border-2 border-[#E5E5E5] rounded-xl px-1.5 sm:px-2 py-1">
             {PEN_SIZES.map((p) => {
               const active = penSize === p.size && tool !== 'pan';
               return (
@@ -408,7 +408,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
                     setPenSize(p.size);
                     if (tool === 'pan') setTool('pen');
                   }}
-                  className={`px-2.5 py-1.5 rounded-lg text-xs font-extrabold transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 ${
+                  className={`px-2 sm:px-2.5 py-1.5 rounded-lg text-[11px] sm:text-xs font-extrabold transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 ${
                     active
                       ? 'bg-[#D7FFB8] text-[#46A302]'
                       : 'text-[#777777] hover:bg-[#F7F7F7]'
@@ -421,18 +421,18 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
           </div>
 
           {/* Pen / Eraser / Undo / Clear */}
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
               disabled={disabled}
               onClick={() => setTool('pen')}
-              className={`duo-btn flex items-center gap-1.5 px-3 py-2 rounded-xl border-2 border-b-4 text-xs font-extrabold whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 ${
+              className={`duo-btn flex items-center gap-1 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl border-2 border-b-4 text-[11px] sm:text-xs font-extrabold whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 ${
                 tool === 'pen'
                   ? 'bg-[#1CB0F6] border-[#1899D6] text-white'
                   : 'bg-white border-[#E5E5E5] text-[#3C3C3C] hover:bg-[#F7F7F7]'
               }`}
             >
-              <PenTool className="w-4 h-4" />
+              <PenTool className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               <span>قلم</span>
             </button>
 
@@ -440,13 +440,13 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
               type="button"
               disabled={disabled}
               onClick={() => setTool('eraser')}
-              className={`duo-btn flex items-center gap-1.5 px-3 py-2 rounded-xl border-2 border-b-4 text-xs font-extrabold whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 ${
+              className={`duo-btn flex items-center gap-1 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl border-2 border-b-4 text-[11px] sm:text-xs font-extrabold whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 ${
                 tool === 'eraser'
                   ? 'bg-[#FFC800] border-[#E5A400] text-[#3C3C3C]'
                   : 'bg-white border-[#E5E5E5] text-[#3C3C3C] hover:bg-[#F7F7F7]'
               }`}
             >
-              <Eraser className="w-4 h-4" />
+              <Eraser className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               <span>مسّاحة</span>
             </button>
 
@@ -455,9 +455,9 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
               disabled={disabled || strokes.length === 0}
               onClick={handleUndo}
               title="تراجع"
-              className="duo-btn flex items-center gap-1 px-3 py-2 rounded-xl bg-white border-2 border-b-4 border-[#E5E5E5] text-xs font-extrabold text-[#3C3C3C] hover:bg-[#F7F7F7] whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-40"
+              className="duo-btn flex items-center gap-1 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl bg-white border-2 border-b-4 border-[#E5E5E5] text-[11px] sm:text-xs font-extrabold text-[#3C3C3C] hover:bg-[#F7F7F7] whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-40"
             >
-              <RotateCcw className="w-4 h-4" />
+              <RotateCcw className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               <span>تراجع</span>
             </button>
 
@@ -466,17 +466,18 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
               disabled={disabled || strokes.length === 0}
               onClick={handleClear}
               title="مسح السبورة"
-              className="duo-btn flex items-center gap-1 px-3 py-2 rounded-xl bg-white border-2 border-b-4 border-[#E5E5E5] text-xs font-extrabold text-[#EA2B2B] hover:bg-[#FFDFE0] whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-40"
+              className="duo-btn flex items-center gap-1 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl bg-white border-2 border-b-4 border-[#E5E5E5] text-[11px] sm:text-xs font-extrabold text-[#EA2B2B] hover:bg-[#FFDFE0] whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-40"
             >
-              <Trash2 className="w-4 h-4" />
-              <span>مسح الكل</span>
+              <Trash2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+              <span className="sm:hidden">مسح</span>
+              <span className="hidden sm:inline">مسح الكل</span>
             </button>
           </div>
         </div>
         )}
 
         {/* Zoom & Pan Controls */}
-        <div className="flex items-center gap-1.5 bg-white border-2 border-[#E5E5E5] rounded-xl px-2 py-1.5">
+        <div className="flex items-center gap-1 bg-white border-2 border-[#E5E5E5] rounded-xl px-1.5 sm:px-2 py-1">
           <button
             type="button"
             onClick={() => setTool(tool === 'pan' ? 'pen' : 'pan')}
@@ -500,7 +501,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
             <ZoomOut className="w-4 h-4" />
           </button>
 
-          <span className="font-latin text-xs font-extrabold text-[#3C3C3C] min-w-[44px] text-center">
+          <span className="font-latin text-[11px] sm:text-xs font-extrabold text-[#3C3C3C] min-w-[38px] sm:min-w-[44px] text-center">
             {Math.round(zoom * 100)}%
           </span>
 
@@ -534,10 +535,17 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
             transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
             transformOrigin: 'center center',
             transition: isPanningRef.current ? 'none' : 'transform 0.12s ease-out',
+            containerType: 'size',
           }}
-          className="w-full h-full flex items-center justify-center p-2"
+          className="w-full h-full flex items-center justify-center p-1 sm:p-2"
         >
-          <div className="relative max-w-full max-h-full aspect-[12/7] w-full bg-white rounded-xl border-2 border-[#E5E5E5] shadow-sm overflow-hidden">
+          <div
+            style={{
+              width: 'min(100cqw, calc(100cqh * 12 / 7))',
+              height: 'min(100cqh, calc(100cqw * 7 / 12))',
+            }}
+            className="relative bg-white rounded-xl border-2 border-[#E5E5E5] shadow-sm overflow-hidden shrink-0"
+          >
             {backgroundImage && (
               <img
                 src={backgroundImage}
@@ -559,7 +567,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
               onPointerMove={handlePointerMove}
               onPointerUp={finishStroke}
               onPointerCancel={finishStroke}
-              className={`relative z-[1] w-full h-full block bg-transparent ${
+              className={`relative z-[1] w-full h-full block bg-transparent touch-none ${
                 tool === 'pan' || viewOnly
                   ? 'cursor-grab active:cursor-grabbing'
                   : disabled
@@ -572,10 +580,10 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
 
         {/* Locked Overlay (Never shown in viewOnly Explain Mode so students see the live explanation clearly) */}
         {disabled && !viewOnly && (
-          <div className="absolute inset-0 bg-white/75 backdrop-blur-[2px] flex flex-col items-center justify-center p-6 text-center z-10">
-            <DuoLockShield className="w-14 h-14 mb-3" />
-            <p className="text-lg font-black text-[#3C3C3C] mb-1">{lockTitle}</p>
-            <p className="text-sm font-bold text-[#777777] max-w-md">{lockSubtitle}</p>
+          <div className="absolute inset-0 bg-white/75 backdrop-blur-[2px] flex flex-col items-center justify-center p-4 sm:p-6 text-center z-10">
+            <DuoLockShield className="w-11 h-11 sm:w-14 sm:h-14 mb-2 sm:mb-3" />
+            <p className="text-base sm:text-lg font-black text-[#3C3C3C] mb-1">{lockTitle}</p>
+            <p className="text-xs sm:text-sm font-bold text-[#777777] max-w-md">{lockSubtitle}</p>
           </div>
         )}
       </div>
