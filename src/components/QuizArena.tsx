@@ -75,7 +75,13 @@ import {
   playDuoSound,
 } from './DuoIcons';
 import { solveQuestionWithAi, type AiSolution } from '../aiClient';
-import { loadQuizDraft, saveQuizDraft } from '../localDraftStore';
+import {
+  loadQuizDraft,
+  loadSessionSnapshot,
+  mergeActiveRoomSnapshot,
+  saveQuizDraft,
+  type StoredRoomSnapshot,
+} from '../localDraftStore';
 import {
   doesStrokeIntersectEraser,
   renderStrokesToDataUrl,
@@ -529,8 +535,25 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
       setLocalStrokes(myBoard.strokes || []);
     } else {
       setLocalStrokes([]);
+      if (!isSupervisor) {
+        let cancelled = false;
+        void loadSessionSnapshot<StoredRoomSnapshot>('active_room').then((snap) => {
+          if (cancelled || !snap || snap.room.id !== room.id) return;
+          const prevBoard = snap.boards.find(
+            (b) =>
+              b.questionId === currentQuestion.id &&
+              (b.studentId === profile.uid || b.studentName === profile.fullNameQuad)
+          );
+          if (prevBoard && (prevBoard.strokes?.length ?? 0) > 0) {
+            setLocalStrokes(prevBoard.strokes);
+          }
+        });
+        return () => {
+          cancelled = true;
+        };
+      }
     }
-  }, [currentQuestion?.id, myBoard?.studentId]);
+  }, [currentQuestion?.id, myBoard?.studentId, isSupervisor, room.id, profile.uid, profile.fullNameQuad]);
 
   // Sound feedback when question resolves
   const prevQStatusRef = useRef<string | null>(null);
@@ -548,6 +571,89 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
     }
     prevQStatusRef.current = currentQuestion.status;
   }, [currentQuestion?.id, currentQuestion?.status]);
+
+  // Continuously mirror live quiz & explain data to IndexedDB for lossless database failover
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      let mergedBoards = boards;
+      if (!isSupervisor && currentQuestion && localStrokes.length > 0) {
+        const hasMine = boards.some((b) => b.studentId === profile.uid);
+        if (hasMine) {
+          mergedBoards = boards.map((b) =>
+            b.studentId === profile.uid ? { ...b, strokes: localStrokes } : b
+          );
+        } else {
+          mergedBoards = [
+            ...boards,
+            {
+              studentId: profile.uid,
+              studentName: profile.fullNameQuad,
+              roomId: room.id,
+              questionId: currentQuestion.id,
+              strokes: localStrokes,
+              submitted: false,
+              verdict: 'pending',
+            },
+          ];
+        }
+      }
+
+      const mergedExplainLayers =
+        localExplainStrokes.length > 0 &&
+        !explainLayers.some((l) => l.authorId === profile.uid)
+          ? [
+              ...explainLayers,
+              {
+                id: profile.uid,
+                roomId: room.id,
+                authorId: profile.uid,
+                authorName: profile.fullNameQuad,
+                strokes: localExplainStrokes,
+              },
+            ]
+          : explainLayers.map((l) =>
+              l.authorId === profile.uid && localExplainStrokes.length > 0
+                ? { ...l, strokes: localExplainStrokes }
+                : l
+            );
+
+      void mergeActiveRoomSnapshot(room.id, {
+        room,
+        participants,
+        questions,
+        slides: explainSlides,
+        explainLayers: mergedExplainLayers,
+        slideLayers: explainSlideLayers,
+        sharedBoard: sharedBoardExists
+          ? {
+              roomId: room.id,
+              strokes: sharedStrokes,
+              updatedBy: profile.uid,
+              updatedByName: profile.fullNameQuad,
+            }
+          : null,
+        boards: mergedBoards,
+        myRole: isSupervisor ? 'supervisor' : 'student',
+      });
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [
+    room,
+    participants,
+    questions,
+    explainSlides,
+    explainLayers,
+    explainSlideLayers,
+    sharedBoardExists,
+    sharedStrokes,
+    boards,
+    localStrokes,
+    localExplainStrokes,
+    currentQuestion?.id,
+    isSupervisor,
+    profile.uid,
+    profile.fullNameQuad,
+  ]);
 
   // Pending submission queue ordered by server timestamp (first to press "تم" = الطالب الأول)
   const pendingQueue = useMemo(() => {

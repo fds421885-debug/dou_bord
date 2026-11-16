@@ -17,6 +17,7 @@ import {
   OperationType,
 } from '../firebase';
 import type { SavedQuestion, SavedTest, UserProfile } from '../types';
+import { saveSavedTestsListSnapshot } from '../localDraftStore';
 import { DUO_IMAGES, DuoArtwork, playDuoSound } from './DuoIcons';
 import { TestResultsView } from './TestResultsView';
 
@@ -49,6 +50,7 @@ export const SavedTestsView: React.FC<SavedTestsViewProps> = ({ profile }) => {
         list.sort((a, b) => getTimestampMillis(b.createdAt) - getTimestampMillis(a.createdAt));
         setTests(list);
         setLoading(false);
+        void saveSavedTestsListSnapshot(profile.uid, list);
       },
       (err) => {
         handleFirestoreError(err, OperationType.LIST, path);
@@ -70,6 +72,7 @@ export const SavedTestsView: React.FC<SavedTestsViewProps> = ({ profile }) => {
       const questions: SavedQuestion[] = [];
       qSnap.forEach((d) => questions.push(d.data() as SavedQuestion));
       questions.sort((a, b) => a.orderIndex - b.orderIndex);
+      void saveSavedTestsListSnapshot(profile.uid, tests, { [test.id]: questions });
       setOpenedTest({ test, questions });
     } catch (err) {
       handleFirestoreError(err, OperationType.LIST, path);

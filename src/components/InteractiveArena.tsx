@@ -38,6 +38,7 @@ import type {
   UserProfile,
 } from '../types';
 import { playDuoSound } from './DuoIcons';
+import { mergeActiveRoomSnapshot } from '../localDraftStore';
 import { WhiteboardCanvas } from './WhiteboardCanvas';
 
 interface InteractiveArenaProps {
@@ -181,6 +182,20 @@ export const InteractiveArena: React.FC<InteractiveArenaProps> = ({
     );
     setMyStrokes(mine?.strokes ?? []);
   }, [activeSlide?.id]);
+
+  // Continuously mirror live interactive slides & layers to IndexedDB for database failover
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void mergeActiveRoomSnapshot(room.id, {
+        room,
+        participants,
+        slides,
+        slideLayers: layers,
+        myRole: isSupervisor ? 'supervisor' : 'student',
+      });
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [room, participants, slides, layers, isSupervisor]);
 
   const canDraw = useMemo(() => {
     if (!activeSlide) return false;

@@ -6,17 +6,39 @@ import {
   getDoc,
   onSnapshot,
   query,
+  serverTimestamp,
+  setDoc,
   where,
 } from 'firebase/firestore';
-import { Archive, Home, LogOut, RefreshCw, AlertCircle } from 'lucide-react';
 import {
+  AlertCircle,
+  Archive,
+  Database,
+  Home,
+  LogOut,
+  RefreshCw,
+  X,
+} from 'lucide-react';
+import {
+  activeProjectId,
   auth,
+  clearPendingRejoinRoom,
   db,
+  getPendingRejoinRoom,
   getTimestampMillis,
   handleFirestoreError,
+  isCustomFirebaseConfig,
+  isQuadNameValid,
   OperationType,
+  subscribeQuotaError,
   UPGRADE_FIRESTORE_URL,
 } from './firebase';
+import {
+  loadSessionSnapshot,
+  mergeActiveRoomSnapshot,
+  saveSessionSnapshot,
+  type StoredUserProfileSnapshot,
+} from './localDraftStore';
 import type { Participant, Room, UserProfile } from './types';
 import { AuthGate } from './components/AuthGate';
 import { RoleHub } from './components/RoleHub';
@@ -25,14 +47,20 @@ import { QuizArena } from './components/QuizArena';
 import { InteractiveArena } from './components/InteractiveArena';
 import { TestResultsView } from './components/TestResultsView';
 import { SavedTestsView } from './components/SavedTestsView';
+import { DatabaseMigrationModal } from './components/DatabaseMigrationModal';
 import { DuoOwlEmblem } from './components/DuoIcons';
 
 interface ErrorBoundaryState {
   hasError: boolean;
 }
 
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+  onOpenMigration?: () => void;
+}
+
 class AppErrorBoundary extends Component<
-  { children: React.ReactNode },
+  ErrorBoundaryProps,
   ErrorBoundaryState
 > {
   state: ErrorBoundaryState = { hasError: false };
@@ -51,15 +79,30 @@ class AppErrorBoundary extends Component<
               حدث خطأ غير متوقع
             </h1>
             <p className="text-sm font-bold text-[#777777]">
-              يرجى تحديث الصفحة لإعادة الاتصال بقاعدة البيانات.
+              يرجى تحديث الصفحة لإعادة الاتصال بقاعدة البيانات، أو نقل العمل لقاعدة بيانات أخرى إذا وصلت القاعدة الحالية للحد اليومي.
             </p>
-            <button
-              type="button"
-              onClick={() => window.location.reload()}
-              className="duo-btn px-6 py-3 rounded-2xl bg-[#58CC02] border-2 border-b-4 border-[#46A302] text-white font-black cursor-pointer"
-            >
-              تحديث الصفحة
-            </button>
+            <div className="flex flex-wrap items-center justify-center gap-3 w-full">
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="duo-btn px-5 py-3 rounded-2xl bg-[#58CC02] border-2 border-b-4 border-[#46A302] text-white font-black cursor-pointer"
+              >
+                تحديث الصفحة
+              </button>
+              {this.props.onOpenMigration && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    this.setState({ hasError: false });
+                    this.props.onOpenMigration?.();
+                  }}
+                  className="duo-btn flex items-center gap-2 px-5 py-3 rounded-2xl bg-[#1CB0F6] border-2 border-b-4 border-[#1899D6] text-white font-black cursor-pointer"
+                >
+                  <Database className="w-4 h-4" />
+                  <span>انقل لقاعدة بيانات أخرى</span>
+                </button>
+              )}
+            </div>
           </div>
         </div>
       );
@@ -114,9 +157,20 @@ export default function App() {
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [room, setRoom] = useState<Room | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
+  const [quotaAlert, setQuotaAlert] = useState<boolean>(false);
+  const [migrationModalOpen, setMigrationModalOpen] = useState<boolean>(false);
+  const [pendingRoomNotice, setPendingRoomNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    return subscribeQuotaError(() => {
+      setQuotaAlert(true);
+    });
+  }, []);
 
   const handleEnterRoom = (roomId: string) => {
     setActiveRoomId(roomId);
+    setPendingRoomNotice(null);
+    clearPendingRejoinRoom();
     if (firebaseUser) {
       persistActiveRoom(firebaseUser.uid, roomId);
     }
@@ -133,20 +187,64 @@ export default function App() {
   const loadUserProfile = async (user: User) => {
     setProfileLoading(true);
     setProfileLoadError(null);
+    setPendingRoomNotice(null);
     const path = `users/${user.uid}/private/profile`;
     try {
-      const snap = await getDoc(doc(db, 'users', user.uid, 'private', 'profile'));
+      const profileRef = doc(db, 'users', user.uid, 'private', 'profile');
+      const snap = await getDoc(profileRef);
+      let resolvedProfile: UserProfile | null = null;
+
       if (snap.exists()) {
-        const data = snap.data() as UserProfile;
-        setProfile(data);
+        resolvedProfile = snap.data() as UserProfile;
+      } else if (isCustomFirebaseConfig || getPendingRejoinRoom()) {
+        // When arriving on a newly switched Firebase project via migration/share link,
+        // automatically restore the user's 4-part name from local IndexedDB snapshot if present.
+        const cachedProfile =
+          await loadSessionSnapshot<StoredUserProfileSnapshot>('user_profile');
+        let cachedQuad = cachedProfile?.fullNameQuad ?? '';
+        if (!cachedQuad) {
+          try {
+            cachedQuad = localStorage.getItem('duoboard_last_quad_name') || '';
+          } catch {
+            // Ignore storage errors
+          }
+        }
+        const cleanedQuad = cachedQuad.trim().replace(/\s+/g, ' ');
+        if (isQuadNameValid(cleanedQuad) && user.emailVerified) {
+          await setDoc(profileRef, {
+            uid: user.uid,
+            fullNameQuad: cleanedQuad,
+            email: user.email || cachedProfile?.email || 'user@example.com',
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+          resolvedProfile = {
+            uid: user.uid,
+            fullNameQuad: cleanedQuad,
+            email: user.email || cachedProfile?.email || 'user@example.com',
+          };
+        }
+      }
+
+      if (resolvedProfile) {
+        setProfile(resolvedProfile);
         try {
-          localStorage.setItem(`duoboard_quad_${user.uid}`, data.fullNameQuad);
+          localStorage.setItem(`duoboard_quad_${user.uid}`, resolvedProfile.fullNameQuad);
+          localStorage.setItem('duoboard_last_quad_name', resolvedProfile.fullNameQuad);
         } catch {
           // Ignore storage errors
         }
+        void saveSessionSnapshot({
+          key: 'user_profile',
+          uid: user.uid,
+          fullNameQuad: resolvedProfile.fullNameQuad,
+          email: resolvedProfile.email || user.email || 'user@example.com',
+          updatedAt: Date.now(),
+        });
 
-        // Restore active room if user refreshed the page while inside a room
-        const candidateRoom = getCandidateSavedRoom(user.uid);
+        // Restore active room if user refreshed or followed a migration link
+        const pendingRoom = getPendingRejoinRoom();
+        const candidateRoom = getCandidateSavedRoom(user.uid) || pendingRoom;
         if (candidateRoom) {
           try {
             const rSnap = await getDoc(doc(db, 'rooms', candidateRoom));
@@ -155,22 +253,41 @@ export default function App() {
               if (rData.supervisorId === user.uid) {
                 setActiveRoomId(candidateRoom);
                 persistActiveRoom(user.uid, candidateRoom);
+                clearPendingRejoinRoom();
               } else {
-                const pSnap = await getDoc(
-                  doc(db, 'rooms', candidateRoom, 'participants', user.uid)
-                );
+                const pRef = doc(db, 'rooms', candidateRoom, 'participants', user.uid);
+                const pSnap = await getDoc(pRef);
                 if (pSnap.exists()) {
                   setActiveRoomId(candidateRoom);
                   persistActiveRoom(user.uid, candidateRoom);
+                  clearPendingRejoinRoom();
+                } else if (pendingRoom && rData.status !== 'finished') {
+                  // Auto-join student onto the newly migrated room
+                  await setDoc(pRef, {
+                    uid: user.uid,
+                    roomId: candidateRoom,
+                    fullNameQuad: resolvedProfile.fullNameQuad.slice(0, 120),
+                    score: 0,
+                    correctCount: 0,
+                    joinedAt: serverTimestamp(),
+                    updatedAt: serverTimestamp(),
+                  });
+                  setActiveRoomId(candidateRoom);
+                  persistActiveRoom(user.uid, candidateRoom);
+                  clearPendingRejoinRoom();
                 } else {
                   persistActiveRoom(user.uid, null);
                 }
               }
+            } else if (pendingRoom) {
+              setPendingRoomNotice(pendingRoom);
             } else {
               persistActiveRoom(user.uid, null);
             }
           } catch {
-            persistActiveRoom(user.uid, null);
+            if (!pendingRoom) {
+              persistActiveRoom(user.uid, null);
+            }
           }
         }
       } else {
@@ -185,8 +302,9 @@ export default function App() {
         console.error(wrapped);
       }
       if (lower.includes('quota exceeded') || lower.includes('resource-exhausted')) {
+        setQuotaAlert(true);
         setProfileLoadError(
-          'تم تجاوز الحصة اليومية المجانية لقاعدة البيانات (Firestore Quota exceeded). تتجدد الحصة تلقائياً في اليوم التالي، أو يمكنك الترقية من لوحة Firebase.'
+          'تم تجاوز الحصة اليومية المجانية لقاعدة البيانات (Firestore Quota exceeded). تتجدد الحصة تلقائياً في اليوم التالي، أو يمكنك نقل العمل والبيانات فوراً إلى قاعدة بيانات أخرى.'
         );
       } else if (lower.includes('permission-denied') || lower.includes('permission_denied')) {
         setProfileLoadError(
@@ -271,6 +389,16 @@ export default function App() {
     };
   }, [activeRoomId, firebaseUser]);
 
+  // Mirror current room & participants into IndexedDB snapshot (covers WaitingRoom as well)
+  useEffect(() => {
+    if (!room || !profile) return;
+    void mergeActiveRoomSnapshot(room.id, {
+      room,
+      participants,
+      myRole: room.supervisorId === profile.uid ? 'supervisor' : 'student',
+    });
+  }, [room, participants, profile?.uid]);
+
   if (!authReady || profileLoading) {
     return (
       <div className="min-h-screen bg-white flex flex-col items-center justify-center gap-4">
@@ -280,71 +408,98 @@ export default function App() {
     );
   }
 
+  const isSupervisor = Boolean(room && room.supervisorId === profile?.uid);
+
+  const migrationModal = (
+    <DatabaseMigrationModal
+      open={migrationModalOpen}
+      quotaTriggered={quotaAlert}
+      currentProfile={profile}
+      currentRoom={room}
+      isSupervisorInCurrentRoom={isSupervisor}
+      onClose={() => setMigrationModalOpen(false)}
+    />
+  );
+
   if (firebaseUser && !profile && profileLoadError) {
     return (
-      <div className="min-h-screen bg-white flex items-center justify-center p-4 sm:p-6">
-        <div className="duo-card max-w-lg w-full p-6 sm:p-8 text-center flex flex-col items-center gap-4 border-[#FF4B4B]">
-          <div className="w-14 h-14 rounded-2xl bg-[#FFDFE0] text-[#EA2B2B] flex items-center justify-center">
-            <AlertCircle className="w-8 h-8" />
-          </div>
-          <h1 className="text-xl font-black text-[#3C3C3C]">
-            تعذر تحميل بيانات الحساب مؤقتاً
-          </h1>
-          <p className="text-sm font-bold text-[#777777] leading-relaxed">
-            {profileLoadError}
-          </p>
-          {profileLoadError.includes('Firestore Quota') && (
-            <a
-              href={UPGRADE_FIRESTORE_URL}
-              target="_blank"
-              rel="noreferrer"
-              className="text-xs font-black text-[#1899D6] underline"
-            >
-              فتح إعدادات قاعدة البيانات والترقية في Firebase Console
-            </a>
-          )}
-          <div className="flex flex-wrap items-center justify-center gap-3 w-full pt-2">
-            <button
-              type="button"
-              onClick={() => void loadUserProfile(firebaseUser)}
-              className="duo-btn flex items-center gap-2 px-6 py-3 rounded-2xl bg-[#58CC02] hover:bg-[#61E002] border-2 border-b-4 border-[#46A302] text-white text-sm font-black cursor-pointer"
-            >
-              <RefreshCw className="w-4 h-4" />
-              <span>إعادة المحاولة</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => void signOut(auth)}
-              className="duo-btn flex items-center gap-2 px-5 py-3 rounded-2xl bg-white border-2 border-b-4 border-[#E5E5E5] text-[#3C3C3C] text-sm font-black cursor-pointer"
-            >
-              <LogOut className="w-4 h-4" />
-              <span>تبديل الحساب</span>
-            </button>
+      <>
+        <div className="min-h-screen bg-white flex items-center justify-center p-4 sm:p-6">
+          <div className="duo-card max-w-lg w-full p-6 sm:p-8 text-center flex flex-col items-center gap-4 border-[#FF4B4B]">
+            <div className="w-14 h-14 rounded-2xl bg-[#FFDFE0] text-[#EA2B2B] flex items-center justify-center">
+              <AlertCircle className="w-8 h-8" />
+            </div>
+            <h1 className="text-xl font-black text-[#3C3C3C]">
+              تعذر تحميل بيانات الحساب مؤقتاً
+            </h1>
+            <p className="text-sm font-bold text-[#777777] leading-relaxed">
+              {profileLoadError}
+            </p>
+            {profileLoadError.includes('Firestore Quota') && (
+              <a
+                href={UPGRADE_FIRESTORE_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs font-black text-[#1899D6] underline"
+              >
+                فتح إعدادات قاعدة البيانات والترقية في Firebase Console
+              </a>
+            )}
+            <div className="flex flex-wrap items-center justify-center gap-3 w-full pt-2">
+              <button
+                type="button"
+                onClick={() => setMigrationModalOpen(true)}
+                className="duo-btn flex items-center gap-2 px-6 py-3 rounded-2xl bg-[#1CB0F6] hover:bg-[#33BCFF] border-2 border-b-4 border-[#1899D6] text-white text-sm font-black cursor-pointer"
+              >
+                <Database className="w-4 h-4" />
+                <span>انقل لقاعدة بيانات أخرى</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void loadUserProfile(firebaseUser)}
+                className="duo-btn flex items-center gap-2 px-6 py-3 rounded-2xl bg-[#58CC02] hover:bg-[#61E002] border-2 border-b-4 border-[#46A302] text-white text-sm font-black cursor-pointer"
+              >
+                <RefreshCw className="w-4 h-4" />
+                <span>إعادة المحاولة</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void signOut(auth)}
+                className="duo-btn flex items-center gap-2 px-5 py-3 rounded-2xl bg-white border-2 border-b-4 border-[#E5E5E5] text-[#3C3C3C] text-sm font-black cursor-pointer"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>تبديل الحساب</span>
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+        {migrationModal}
+      </>
     );
   }
 
   if (!firebaseUser || !profile) {
     return (
-      <AppErrorBoundary>
+      <AppErrorBoundary onOpenMigration={() => setMigrationModalOpen(true)}>
         <AuthGate
           firebaseUser={firebaseUser}
           profile={profile}
           onProfileSaved={(saved) => {
             setProfileLoadError(null);
             setProfile(saved);
+            if (firebaseUser) {
+              void loadUserProfile(firebaseUser);
+            }
           }}
+          onOpenMigration={() => setMigrationModalOpen(true)}
         />
+        {migrationModal}
       </AppErrorBoundary>
     );
   }
 
-  const isSupervisor = Boolean(room && room.supervisorId === profile.uid);
-
   return (
-    <AppErrorBoundary>
+    <AppErrorBoundary onOpenMigration={() => setMigrationModalOpen(true)}>
       <div className="min-h-screen bg-[#FFFFFF] flex flex-col overflow-x-hidden">
         {/* Clean 3-Zone Duolingo Top Navigation Bar */}
         <header className="border-b-2 border-[#E5E5E5] bg-white sticky top-0 z-30">
@@ -398,8 +553,25 @@ export default function App() {
               </div>
             )}
 
-            {/* Zone 3: Primary Action */}
-            <div className="flex items-center shrink-0">
+            {/* Zone 3: Primary Action + Database Switcher */}
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setMigrationModalOpen(true)}
+                title={`قاعدة البيانات الحالية: ${activeProjectId}`}
+                className={`duo-btn flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl border-2 border-b-4 text-[11px] sm:text-xs font-black whitespace-nowrap shrink-0 cursor-pointer ${
+                  quotaAlert
+                    ? 'bg-[#FFDFE0] border-[#FF4B4B] text-[#EA2B2B] animate-pulse'
+                    : isCustomFirebaseConfig
+                    ? 'bg-[#F0F9FF] border-[#1CB0F6] text-[#1899D6]'
+                    : 'bg-white border-[#E5E5E5] text-[#777777] hover:text-[#1899D6]'
+                }`}
+              >
+                <Database className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                <span className="hidden md:inline font-latin">{activeProjectId}</span>
+                <span className="md:hidden">القاعدة</span>
+              </button>
+
               {activeRoomId ? (
                 <button
                   type="button"
@@ -423,6 +595,59 @@ export default function App() {
             </div>
           </div>
         </header>
+
+        {/* Global Quota Failover Banner whenever any Firestore read/write hits Quota Exceeded */}
+        {quotaAlert && (
+          <div className="bg-[#FFDFE0] border-b-2 border-[#FF4B4B] px-3 sm:px-6 py-3">
+            <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 text-[#EA2B2B] text-xs sm:text-sm font-black">
+                <AlertCircle className="w-5 h-5 shrink-0" />
+                <span>
+                  وصلت قاعدة البيانات الحالية إلى الحد اليومي المجاني (Quota exceeded). يمكنك نقل الغرفة وبياناتك لقاعدة بيانات أخرى فوراً لاستكمال العمل!
+                </span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setMigrationModalOpen(true)}
+                  className="duo-btn flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#58CC02] hover:bg-[#61E002] border-2 border-b-4 border-[#46A302] text-white text-xs sm:text-sm font-black cursor-pointer"
+                >
+                  <Database className="w-4 h-4" />
+                  <span>انقل لقاعدة بيانات أخرى</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setQuotaAlert(false)}
+                  className="p-1.5 rounded-lg text-[#EA2B2B] hover:bg-white/60 cursor-pointer"
+                  title="إخفاء التنبيه"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Pending Student Rejoin Banner if student opened migration link before supervisor completed room transfer */}
+        {pendingRoomNotice && !activeRoomId && (
+          <div className="bg-[#FFF4CC] border-b-2 border-[#FFC800] px-3 sm:px-6 py-3">
+            <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
+              <p className="text-xs sm:text-sm font-black text-[#3C3C3C]">
+                بانتظار إكمال المشرف لنقل الغرفة{' '}
+                <span className="font-latin text-[#1899D6]">{pendingRoomNotice}</span>{' '}
+                على قاعدة البيانات الجديدة...
+              </p>
+              <button
+                type="button"
+                onClick={() => void loadUserProfile(firebaseUser)}
+                className="duo-btn flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#1CB0F6] border-2 border-b-4 border-[#1899D6] text-white text-xs font-black cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>تحقق وادخل الغرفة الآن</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Main Content */}
         <main className="flex-1">
@@ -474,6 +699,7 @@ export default function App() {
           )}
         </main>
       </div>
+      {migrationModal}
     </AppErrorBoundary>
   );
 }

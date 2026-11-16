@@ -11,6 +11,11 @@ import {
 } from 'firebase/firestore';
 import { ArrowRight, CheckCircle2, X, ZoomIn } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
+import {
+  loadSessionSnapshot,
+  saveSavedTestsListSnapshot,
+  type StoredSavedTestsSnapshot,
+} from '../localDraftStore';
 import type {
   InteractiveSlide,
   Participant,
@@ -196,6 +201,28 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
         if (cancelled) return;
         setQuestionsData(assembledQuestions);
         setParticipantsData(pSummary);
+
+        // Mirror to IndexedDB snapshot so saved test survives quota failover
+        const localSavedObj: SavedTest = {
+          id: liveRoom.id,
+          ownerId: profile.uid,
+          roomCode: liveRoom.id,
+          title: liveRoom.title,
+          userRole: isSupervisor ? 'supervisor' : 'student',
+          supervisorName: liveRoom.supervisorName,
+          totalQuestions: assembledQuestions.length,
+          participantsSummary: pSummary,
+        };
+        const existingSnap = await loadSessionSnapshot<StoredSavedTestsSnapshot>('saved_tests');
+        const prevTests =
+          existingSnap && existingSnap.ownerId === profile.uid
+            ? existingSnap.tests.filter((t) => t.id !== liveRoom.id)
+            : [];
+        void saveSavedTestsListSnapshot(
+          profile.uid,
+          [localSavedObj, ...prevTests],
+          { [liveRoom.id]: assembledQuestions }
+        );
 
         // Auto-save full session + all boards/slides into the user's own personal savedTests archive
         const savedTestRef = doc(db, 'users', profile.uid, 'savedTests', liveRoom.id);
