@@ -500,7 +500,7 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
                               onClick={() =>
                                 setZoomedBoard({
                                   board: b,
-                                  backgroundImage: q.status === 'solving' ? q.imageData : undefined,
+                                  backgroundImage: q.imageData || undefined,
                                 })
                               }
                               className="p-2 rounded-xl bg-white border border-[#E5E5E5] text-[#3C3C3C] hover:text-[#1899D6] cursor-pointer"
@@ -511,7 +511,7 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
                           </div>
                           <WhiteboardPreview
                             strokes={b.strokes || []}
-                            backgroundImage={q.status === 'solving' ? q.imageData : undefined}
+                            backgroundImage={q.imageData || undefined}
                             emptyText="سبورة فارغة"
                           />
                         </div>

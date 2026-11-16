@@ -878,28 +878,46 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
             )}
           </div>
 
-          <div className="flex flex-col md:flex-row gap-4 items-start">
+          <div className="flex flex-col md:flex-row gap-3 sm:gap-4 items-start md:items-center justify-between">
             {currentQuestion.text && (
-              <p className="text-lg sm:text-xl font-black text-[#3C3C3C] leading-relaxed flex-1 whitespace-pre-wrap">
+              <p className="text-base sm:text-xl font-black text-[#3C3C3C] leading-relaxed flex-1 whitespace-pre-wrap">
                 {currentQuestion.text}
               </p>
             )}
             {currentQuestion.imageData && (
-              <button
-                type="button"
-                onClick={() => setZoomedImage(currentQuestion.imageData)}
-                className="group relative rounded-2xl overflow-hidden border-2 border-[#E5E5E5] bg-[#F7F7F7] w-full sm:w-auto sm:max-w-md cursor-pointer shrink-0 flex justify-center"
-              >
-                <img
-                  src={currentQuestion.imageData}
-                  alt="صورة السؤال"
-                  className="max-h-56 sm:max-h-64 w-auto object-contain"
-                />
-                <span className="absolute bottom-2 left-2 bg-black/70 text-white text-xs font-bold px-2.5 py-1 rounded-lg flex items-center gap-1">
-                  <ZoomIn className="w-3.5 h-3.5" />
-                  <span>تكبير الصفحة / الصورة</span>
-                </span>
-              </button>
+              isSupervisor ? (
+                <button
+                  type="button"
+                  onClick={() => setZoomedImage(currentQuestion.imageData)}
+                  className="group relative rounded-2xl overflow-hidden border-2 border-[#E5E5E5] bg-[#F7F7F7] w-full sm:w-auto sm:max-w-sm cursor-pointer shrink-0 flex justify-center"
+                >
+                  <img
+                    src={currentQuestion.imageData}
+                    alt="صورة السؤال"
+                    className="max-h-44 sm:max-h-52 w-auto object-contain"
+                  />
+                  <span className="absolute bottom-2 left-2 bg-black/70 text-white text-xs font-bold px-2.5 py-1 rounded-lg flex items-center gap-1">
+                    <ZoomIn className="w-3.5 h-3.5" />
+                    <span>تكبير الصفحة / الصورة</span>
+                  </span>
+                </button>
+              ) : (
+                <div className="flex flex-wrap items-center justify-between gap-2 w-full md:w-auto">
+                  {!currentQuestion.text && (
+                    <span className="text-sm font-black text-[#1899D6]">
+                      تم عرض الصفحة داخل سبورتك بالأسفل — اكتب وحل عليها مباشرة!
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setZoomedImage(currentQuestion.imageData)}
+                    className="duo-btn flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#DDF4FF] border-2 border-b-3 border-[#1CB0F6] text-[#1899D6] text-xs font-black cursor-pointer whitespace-nowrap"
+                  >
+                    <ZoomIn className="w-4 h-4" />
+                    <span>تكبير الورقة الأصلية</span>
+                  </button>
+                </div>
+              )
             )}
           </div>
         </div>
@@ -952,6 +970,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                 <div className="lg:col-span-2">
                   <WhiteboardPreview
                     strokes={activeReviewBoard.strokes || []}
+                    backgroundImage={currentQuestion.imageData || undefined}
                     className="w-full aspect-[12/7]"
                   />
                 </div>
@@ -1383,6 +1402,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
 
                       <WhiteboardPreview
                         strokes={board?.strokes || []}
+                        backgroundImage={currentQuestion?.imageData || undefined}
                         emptyText={
                           currentQuestion ? 'لم يكتب الطالب بعد' : 'بانتظار السؤال'
                         }
@@ -1400,6 +1420,12 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
           <WhiteboardCanvas
             strokes={localStrokes}
             onStrokesChange={handleStrokesChange}
+            backgroundImage={currentQuestion?.imageData || undefined}
+            heightClass={
+              currentQuestion?.imageData
+                ? 'h-[310px] sm:h-[460px] md:h-[560px]'
+                : undefined
+            }
             disabled={studentLockedInfo.locked}
             lockTitle={studentLockedInfo.title}
             lockSubtitle={studentLockedInfo.subtitle}
@@ -1483,6 +1509,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
             </div>
             <WhiteboardPreview
               strokes={inspectedBoard.strokes || []}
+              backgroundImage={currentQuestion?.imageData || undefined}
               className="w-full aspect-[12/7]"
             />
           </div>
