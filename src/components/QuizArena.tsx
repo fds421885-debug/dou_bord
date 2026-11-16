@@ -12,6 +12,7 @@ import {
 } from 'firebase/firestore';
 import {
   ArrowRight,
+  Bot,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -21,6 +22,7 @@ import {
   FileText,
   Flag,
   ImagePlus,
+  Loader2,
   Maximize2,
   Minimize2,
   Minus,
@@ -83,6 +85,12 @@ interface PrivatePdfDoc {
   selectedPage: number;
 }
 
+interface AiSolution {
+  finalAnswer: string;
+  steps: string[];
+  explanation: string;
+}
+
 const TIMER_PRESETS = [
   { label: 'بدون', seconds: 0 },
   { label: '30 ث', seconds: 30 },
@@ -132,6 +140,15 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
   const [draftError, setDraftError] = useState<string | null>(null);
   const [draftTimerSeconds, setDraftTimerSeconds] = useState<number>(60);
   const [insertingQuestion, setInsertingQuestion] = useState(false);
+
+  // Supervisor-only AI Solution & Explanation state
+  const [draftAiSolution, setDraftAiSolution] = useState<AiSolution | null>(null);
+  const [draftAiLoading, setDraftAiLoading] = useState(false);
+  const [draftAiError, setDraftAiError] = useState<string | null>(null);
+  const [activeAiCache, setActiveAiCache] = useState<Record<string, AiSolution>>({});
+  const [activeAiOpen, setActiveAiOpen] = useState(false);
+  const [activeAiLoading, setActiveAiLoading] = useState(false);
+  const [activeAiError, setActiveAiError] = useState<string | null>(null);
 
   // Explain Mode shared whiteboard state (supports simultaneous per-user layers + legacy sharedBoard)
   const [sharedBoardExists, setSharedBoardExists] = useState(false);
@@ -447,11 +464,32 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
     }
   };
 
-  // Supervisor: publish question to everyone (supports text, uploaded image, chosen PDF page, or supervisor's private whiteboard)
-  const handleInsertQuestion = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!isSupervisor || insertingQuestion) return;
+  // Helper: call server-side Gemini endpoint (/api/solve-question) for Supervisor only
+  const requestAiSolve = async (
+    questionText: string,
+    imageDataUrl: string
+  ): Promise<AiSolution> => {
+    const res = await fetch('/api/solve-question', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ questionText, imageDataUrl }),
+    });
+    const data = (await res.json().catch(() => ({}))) as Partial<AiSolution> & {
+      error?: string;
+    };
+    if (!res.ok) {
+      throw new Error(
+        data.error || 'تعذر الحصول على الحل من الذكاء الاصطناعي حالياً.'
+      );
+    }
+    return {
+      finalAnswer: data.finalAnswer || '',
+      steps: Array.isArray(data.steps) ? data.steps : [],
+      explanation: data.explanation || '',
+    };
+  };
 
+  const getDraftPayload = () => {
     let finalImageData = '';
     if (composerTab === 'pdf' && activePdfDoc && activePdfDoc.pages.length > 0) {
       finalImageData = activePdfDoc.pages[activePdfDoc.selectedPage - 1] ?? '';
@@ -467,8 +505,67 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
         finalImageData = renderStrokesToDataUrl(draftBoardStrokes);
       }
     }
+    return {
+      text: draftText.trim().slice(0, 1000),
+      imageData: finalImageData,
+    };
+  };
 
-    if (!draftText.trim() && !finalImageData) {
+  const handleAskAiForDraft = async () => {
+    if (!isSupervisor || draftAiLoading) return;
+    const payload = getDraftPayload();
+    if (!payload.text && !payload.imageData) {
+      setDraftAiError('يرجى كتابة نص السؤال أو تحديد صفحة PDF أو رفع صورة أولاً ليتمكن الذكاء الاصطناعي من حلها.');
+      return;
+    }
+    setDraftAiError(null);
+    setDraftAiLoading(true);
+    try {
+      const result = await requestAiSolve(payload.text, payload.imageData);
+      setDraftAiSolution(result);
+      playDuoSound('pop');
+    } catch (err) {
+      setDraftAiError(
+        err instanceof Error ? err.message : 'تعذر الاتصال بالذكاء الاصطناعي'
+      );
+    } finally {
+      setDraftAiLoading(false);
+    }
+  };
+
+  const handleAskAiForActiveQuestion = async () => {
+    if (!isSupervisor || !currentQuestion || activeAiLoading) return;
+    if (activeAiCache[currentQuestion.id]) {
+      setActiveAiOpen((prev) => !prev);
+      return;
+    }
+    setActiveAiOpen(true);
+    setActiveAiError(null);
+    setActiveAiLoading(true);
+    try {
+      const result = await requestAiSolve(
+        currentQuestion.text || '',
+        currentQuestion.imageData || ''
+      );
+      setActiveAiCache((prev) => ({ ...prev, [currentQuestion.id]: result }));
+      playDuoSound('pop');
+    } catch (err) {
+      setActiveAiError(
+        err instanceof Error ? err.message : 'تعذر الاتصال بالذكاء الاصطناعي'
+      );
+    } finally {
+      setActiveAiLoading(false);
+    }
+  };
+
+  // Supervisor: publish question to everyone (supports text, uploaded image, chosen PDF page, or supervisor's private whiteboard)
+  const handleInsertQuestion = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isSupervisor || insertingQuestion) return;
+
+    const { text: cleanText, imageData: finalImageData } = getDraftPayload();
+
+    if (!cleanText && !finalImageData) {
       setDraftError(
         composerTab === 'pdf'
           ? 'ارفع ملف PDF وحدد الصفحة المطلوب إظهارها للطلاب أولاً'
@@ -490,7 +587,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
         id: newQId,
         roomId: room.id,
         orderIndex,
-        text: draftText.trim().slice(0, 1000),
+        text: cleanText,
         imageData: finalImageData,
         status: 'solving',
         attemptsUsed: 0,
@@ -507,9 +604,18 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
         updatedAt: serverTimestamp(),
       });
       await batch.commit();
+
+      if (draftAiSolution) {
+        setActiveAiCache((prev) => ({ ...prev, [newQId]: draftAiSolution }));
+        setActiveAiOpen(true);
+      } else {
+        setActiveAiOpen(false);
+      }
       setDraftText('');
       setDraftImage('');
       setDraftBoardStrokes([]);
+      setDraftAiSolution(null);
+      setDraftAiError(null);
       playDuoSound('pop');
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, `rooms/${room.id}/questions/${newQId}`);
@@ -1142,6 +1248,32 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                 </div>
               )}
 
+              {isSupervisor && (
+                <button
+                  type="button"
+                  disabled={activeAiLoading}
+                  onClick={() => void handleAskAiForActiveQuestion()}
+                  className={`duo-btn flex items-center gap-1.5 px-3.5 py-2 rounded-xl border-2 border-b-4 text-xs font-black cursor-pointer disabled:opacity-60 ${
+                    activeAiOpen
+                      ? 'bg-[#CE82FF] border-[#A560E8] text-white'
+                      : 'bg-[#F8EDFF] hover:bg-[#F1DCFF] border-[#CE82FF] text-[#8938D6]'
+                  }`}
+                >
+                  {activeAiLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Bot className="w-4 h-4" />
+                  )}
+                  <span>
+                    {activeAiLoading
+                      ? 'جاري الحل بالـ AI...'
+                      : activeAiOpen && activeAiCache[currentQuestion.id]
+                      ? 'إخفاء حل الـ AI'
+                      : 'الحل والطريقة بالـ AI'}
+                  </span>
+                </button>
+              )}
+
               {isSupervisor && currentQuestion.status === 'solving' && (
                 <button
                   type="button"
@@ -1238,6 +1370,85 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
               )
             )}
           </div>
+
+          {/* Supervisor-only Private AI Solution Panel for the Active Question */}
+          {isSupervisor && activeAiOpen && (
+            <div className="rounded-2xl bg-[#F8EDFF] border-2 border-[#CE82FF] p-4 sm:p-5 flex flex-col gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-[#A560E8] text-white flex items-center justify-center shrink-0">
+                    <Bot className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm sm:text-base font-black text-[#5C1A99]">
+                      مساعد الذكاء الاصطناعي للمشرف
+                    </h4>
+                    <span className="text-[11px] font-extrabold text-[#8938D6]">
+                      سري للمشرف فقط — لا يظهر للطلاب نهائياً
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveAiOpen(false)}
+                  className="p-1.5 rounded-xl bg-white hover:bg-[#FFDFE0] text-[#3C3C3C] cursor-pointer"
+                  title="إخفاء"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {activeAiLoading ? (
+                <div className="flex items-center justify-center gap-2.5 py-6 text-sm font-black text-[#8938D6]">
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <span>جاري قراءة السؤال وتحليل الطريقة والإجابة الصحيحة...</span>
+                </div>
+              ) : activeAiError ? (
+                <div className="p-3 rounded-xl bg-[#FFDFE0] border border-[#FF4B4B] text-xs sm:text-sm font-extrabold text-[#EA2B2B]">
+                  {activeAiError}
+                </div>
+              ) : activeAiCache[currentQuestion.id] ? (
+                <div className="flex flex-col gap-3">
+                  <div className="p-3.5 rounded-2xl bg-[#D7FFB8] border-2 border-[#58CC02] flex flex-col gap-1">
+                    <span className="text-xs font-black text-[#46A302]">
+                      الإجابة الصحيحة النهائية:
+                    </span>
+                    <p className="text-base sm:text-lg font-black text-[#264E00] whitespace-pre-wrap">
+                      {activeAiCache[currentQuestion.id].finalAnswer}
+                    </p>
+                  </div>
+
+                  {activeAiCache[currentQuestion.id].steps.length > 0 && (
+                    <div className="rounded-2xl bg-white border-2 border-[#E7C6FF] p-3.5 flex flex-col gap-2">
+                      <span className="text-xs font-black text-[#8938D6]">
+                        كيفية الحل خطوة بخطوة:
+                      </span>
+                      <ol className="flex flex-col gap-2">
+                        {activeAiCache[currentQuestion.id].steps.map((step, idx) => (
+                          <li
+                            key={idx}
+                            className="flex items-start gap-2.5 text-xs sm:text-sm font-bold text-[#3C3C3C] leading-relaxed"
+                          >
+                            <span className="font-latin w-6 h-6 rounded-lg bg-[#CE82FF]/25 text-[#6D23B6] flex items-center justify-center text-xs font-black shrink-0 mt-0.5">
+                              {idx + 1}
+                            </span>
+                            <span className="whitespace-pre-wrap">{step}</span>
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                  )}
+
+                  {activeAiCache[currentQuestion.id].explanation && (
+                    <div className="rounded-2xl bg-white/80 border border-[#E7C6FF] p-3 text-xs sm:text-sm font-bold text-[#524364] leading-relaxed whitespace-pre-wrap">
+                      <span className="font-black text-[#8938D6]">توضيح وفكرة الحل: </span>
+                      {activeAiCache[currentQuestion.id].explanation}
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          )}
         </div>
       ) : (
         <div className="duo-card p-6 bg-[#F7F7F7] flex items-center justify-between gap-4">
@@ -1757,6 +1968,78 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                 <p className="text-sm font-extrabold text-[#EA2B2B]">{draftError}</p>
               )}
 
+              {draftAiError && (
+                <div className="p-3 rounded-2xl bg-[#FFDFE0] border-2 border-[#FF4B4B] text-xs sm:text-sm font-extrabold text-[#EA2B2B]">
+                  {draftAiError}
+                </div>
+              )}
+
+              {/* Supervisor-only AI Preview Solution inside Composer */}
+              {draftAiSolution && (
+                <div className="rounded-2xl bg-[#F8EDFF] border-2 border-[#CE82FF] p-4 sm:p-5 flex flex-col gap-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-xl bg-[#A560E8] text-white flex items-center justify-center shrink-0">
+                        <Bot className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm sm:text-base font-black text-[#5C1A99]">
+                          الإجابة والطريقة بالذكاء الاصطناعي
+                        </h4>
+                        <span className="text-[11px] font-extrabold text-[#8938D6]">
+                          سرية للمشرف فقط — لن يراها الطلاب عند إدراج السؤال
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setDraftAiSolution(null)}
+                      className="p-1.5 rounded-xl bg-white hover:bg-[#FFDFE0] text-[#3C3C3C] cursor-pointer"
+                      title="إغلاق"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="p-3.5 rounded-2xl bg-[#D7FFB8] border-2 border-[#58CC02] flex flex-col gap-1">
+                    <span className="text-xs font-black text-[#46A302]">
+                      الإجابة الصحيحة النهائية:
+                    </span>
+                    <p className="text-base sm:text-lg font-black text-[#264E00] whitespace-pre-wrap">
+                      {draftAiSolution.finalAnswer}
+                    </p>
+                  </div>
+
+                  {draftAiSolution.steps.length > 0 && (
+                    <div className="rounded-2xl bg-white border-2 border-[#E7C6FF] p-3.5 flex flex-col gap-2">
+                      <span className="text-xs font-black text-[#8938D6]">
+                        كيفية الحل خطوة بخطوة:
+                      </span>
+                      <ol className="flex flex-col gap-2">
+                        {draftAiSolution.steps.map((step, idx) => (
+                          <li
+                            key={idx}
+                            className="flex items-start gap-2.5 text-xs sm:text-sm font-bold text-[#3C3C3C] leading-relaxed"
+                          >
+                            <span className="font-latin w-6 h-6 rounded-lg bg-[#CE82FF]/25 text-[#6D23B6] flex items-center justify-center text-xs font-black shrink-0 mt-0.5">
+                              {idx + 1}
+                            </span>
+                            <span className="whitespace-pre-wrap">{step}</span>
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                  )}
+
+                  {draftAiSolution.explanation && (
+                    <div className="rounded-2xl bg-white/80 border border-[#E7C6FF] p-3 text-xs sm:text-sm font-bold text-[#524364] leading-relaxed whitespace-pre-wrap">
+                      <span className="font-black text-[#8938D6]">توضيح وفكرة الحل: </span>
+                      {draftAiSolution.explanation}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <span className="text-xs font-bold text-[#777777]">
                   {composerTab === 'pdf' && activePdfDoc
@@ -1765,24 +2048,43 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
                     ? 'سيتم إرفاق رسم سبورتك الخاصة مع السؤال تلقائياً'
                     : 'لا يظهر للطلاب أي شيء حتى تضغط زر الإدراج'}
                 </span>
-                <button
-                  type="submit"
-                  disabled={insertingQuestion || pdfLoading}
-                  className="duo-btn w-full sm:w-auto flex items-center justify-center gap-2.5 px-6 sm:px-8 py-3.5 rounded-2xl bg-[#58CC02] hover:bg-[#61E002] border-2 border-[#46A302] border-b-[5px] text-white text-sm sm:text-base font-black cursor-pointer disabled:opacity-60"
-                >
-                  {composerTab === 'pdf' && activePdfDoc ? (
-                    <Eye className="w-5 h-5" />
-                  ) : (
-                    <Send className="w-5 h-5" />
-                  )}
-                  <span>
-                    {insertingQuestion
-                      ? 'جاري النشر...'
-                      : composerTab === 'pdf' && activePdfDoc
-                      ? `إظهار صفحة ${activePdfDoc.selectedPage} وإدراجها للجميع`
-                      : 'أدرج السؤال للجميع'}
-                  </span>
-                </button>
+
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+                  <button
+                    type="button"
+                    disabled={draftAiLoading || pdfLoading}
+                    onClick={() => void handleAskAiForDraft()}
+                    className="duo-btn flex items-center justify-center gap-2 px-5 py-3.5 rounded-2xl bg-[#CE82FF] hover:bg-[#D799FF] border-2 border-[#A560E8] border-b-[5px] text-white text-sm font-black cursor-pointer disabled:opacity-60 whitespace-nowrap"
+                  >
+                    {draftAiLoading ? (
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                    ) : (
+                      <Bot className="w-5 h-5" />
+                    )}
+                    <span>
+                      {draftAiLoading ? 'جاري التحليل والحل...' : 'اعرف الحل بالـ AI'}
+                    </span>
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={insertingQuestion || pdfLoading}
+                    className="duo-btn flex items-center justify-center gap-2.5 px-6 sm:px-8 py-3.5 rounded-2xl bg-[#58CC02] hover:bg-[#61E002] border-2 border-[#46A302] border-b-[5px] text-white text-sm sm:text-base font-black cursor-pointer disabled:opacity-60 whitespace-nowrap"
+                  >
+                    {composerTab === 'pdf' && activePdfDoc ? (
+                      <Eye className="w-5 h-5" />
+                    ) : (
+                      <Send className="w-5 h-5" />
+                    )}
+                    <span>
+                      {insertingQuestion
+                        ? 'جاري النشر...'
+                        : composerTab === 'pdf' && activePdfDoc
+                        ? `إظهار صفحة ${activePdfDoc.selectedPage} وإدراجها للجميع`
+                        : 'أدرج السؤال للجميع'}
+                    </span>
+                  </button>
+                </div>
               </div>
             </form>
           )}
