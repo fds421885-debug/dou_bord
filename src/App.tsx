@@ -21,6 +21,7 @@ import { AuthGate } from './components/AuthGate';
 import { RoleHub } from './components/RoleHub';
 import { WaitingRoom } from './components/WaitingRoom';
 import { QuizArena } from './components/QuizArena';
+import { InteractiveArena } from './components/InteractiveArena';
 import { TestResultsView } from './components/TestResultsView';
 import { SavedTestsView } from './components/SavedTestsView';
 import { DuoOwlEmblem } from './components/DuoIcons';
@@ -275,12 +276,21 @@ export default function App() {
                 onLeaveRoom={() => setActiveRoomId(null)}
               />
             ) : room.status === 'active' ? (
-              <QuizArena
-                room={room}
-                profile={profile}
-                participants={participants}
-                isSupervisor={isSupervisor}
-              />
+              room.sessionType === 'interactive' ? (
+                <InteractiveArena
+                  room={room}
+                  profile={profile}
+                  participants={participants}
+                  isSupervisor={isSupervisor}
+                />
+              ) : (
+                <QuizArena
+                  room={room}
+                  profile={profile}
+                  participants={participants}
+                  isSupervisor={isSupervisor}
+                />
+              )
             ) : (
               <TestResultsView
                 profile={profile}

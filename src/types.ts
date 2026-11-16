@@ -14,6 +14,8 @@ export interface UserProfile {
 }
 
 export type RoomStatus = 'waiting' | 'active' | 'finished';
+export type SessionType = 'quiz' | 'interactive';
+export type RoomMode = 'quiz' | 'explain';
 
 export interface Room {
   id: string;
@@ -21,9 +23,43 @@ export interface Room {
   supervisorId: string;
   supervisorName: string;
   status: RoomStatus;
+  sessionType?: SessionType;
+  mode?: RoomMode;
+  explainPresenterId?: string;
+  explainPresenterName?: string;
+  interactiveEditor?: string;
+  interactiveEditorName?: string;
+  currentSlideIndex?: number;
+  slideCount?: number;
   currentQuestionId: string;
   questionCount: number;
   createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface InteractiveSlide {
+  id: string;
+  roomId: string;
+  pageIndex: number;
+  imageData: string;
+  createdAt?: unknown;
+}
+
+export interface SlideLayer {
+  id: string;
+  roomId: string;
+  slideId: string;
+  authorId: string;
+  authorName: string;
+  strokes: Stroke[];
+  updatedAt?: unknown;
+}
+
+export interface SharedExplainBoard {
+  roomId: string;
+  strokes: Stroke[];
+  updatedBy: string;
+  updatedByName: string;
   updatedAt?: unknown;
 }
 

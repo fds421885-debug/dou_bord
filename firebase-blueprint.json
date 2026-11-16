@@ -63,6 +63,36 @@
           "type": "string",
           "enum": ["waiting", "active", "finished"]
         },
+        "sessionType": {
+          "type": "string",
+          "enum": ["quiz", "interactive"]
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["quiz", "explain"]
+        },
+        "explainPresenterId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "explainPresenterName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "interactiveEditor": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "interactiveEditorName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "currentSlideIndex": {
+          "type": "integer"
+        },
+        "slideCount": {
+          "type": "integer"
+        },
         "currentQuestionId": {
           "type": "string",
           "maxLength": 128
@@ -85,6 +115,14 @@
         "supervisorId",
         "supervisorName",
         "status",
+        "sessionType",
+        "mode",
+        "explainPresenterId",
+        "explainPresenterName",
+        "interactiveEditor",
+        "interactiveEditorName",
+        "currentSlideIndex",
+        "slideCount",
         "currentQuestionId",
         "questionCount",
         "createdAt",
@@ -381,6 +419,113 @@
         "boards",
         "createdAt"
       ]
+    },
+    "SharedExplainBoard": {
+      "title": "SharedExplainBoard",
+      "description": "Real-time shared whiteboard synchronized across all room members during Explain Mode",
+      "type": "object",
+      "properties": {
+        "roomId": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 16,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "strokes": {
+          "type": "array"
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "updatedByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["roomId", "strokes", "updatedBy", "updatedByName", "updatedAt"]
+    },
+    "InteractiveSlide": {
+      "title": "InteractiveSlide",
+      "description": "Uploaded PDF page or image slide displayed full-screen in interactive mode",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "roomId": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 16,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "pageIndex": {
+          "type": "integer"
+        },
+        "imageData": {
+          "type": "string",
+          "maxLength": 480000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "roomId", "pageIndex", "imageData", "createdAt"]
+    },
+    "SlideLayer": {
+      "title": "SlideLayer",
+      "description": "Per-user annotation strokes layered live over an interactive slide",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "roomId": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 16,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "slideId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "strokes": {
+          "type": "array"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "roomId", "slideId", "authorId", "authorName", "strokes", "updatedAt"]
     }
   },
   "firestore": {
@@ -411,6 +556,18 @@
     "/rooms/{roomId}/questions/{questionId}/boards/{studentId}": {
       "schema": { "$ref": "#/entities/StudentBoard" },
       "description": "Individual student whiteboard state per question"
+    },
+    "/rooms/{roomId}/sharedBoard/{boardId}": {
+      "schema": { "$ref": "#/entities/SharedExplainBoard" },
+      "description": "Live synchronized explain whiteboard for the room"
+    },
+    "/rooms/{roomId}/slides/{slideId}": {
+      "schema": { "$ref": "#/entities/InteractiveSlide" },
+      "description": "PDF page or image slides in interactive room mode"
+    },
+    "/rooms/{roomId}/slides/{slideId}/layers/{layerId}": {
+      "schema": { "$ref": "#/entities/SlideLayer" },
+      "description": "Real-time annotation layers per user on an interactive slide"
     }
   }
 }

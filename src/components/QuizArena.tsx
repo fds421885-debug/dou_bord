@@ -11,16 +11,25 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import {
+  ArrowRight,
   Check,
+  ChevronLeft,
+  ChevronRight,
+  Eye,
+  EyeOff,
+  FileText,
   Flag,
   ImagePlus,
+  PenTool,
+  Presentation,
   Send,
   SkipForward,
   Sparkles,
   Trash2,
+  Type,
+  Users,
   X,
   ZoomIn,
-  EyeOff,
 } from 'lucide-react';
 import {
   compressImageToDataUrl,
@@ -29,10 +38,12 @@ import {
   handleFirestoreError,
   OperationType,
 } from '../firebase';
+import { renderPdfToSlideImages } from '../pdfUtils';
 import type {
   Participant,
   Question,
   Room,
+  SharedExplainBoard,
   Stroke,
   StudentBoard,
   UserProfile,
@@ -43,7 +54,11 @@ import {
   DuoGemIcon,
   playDuoSound,
 } from './DuoIcons';
-import { WhiteboardCanvas, WhiteboardPreview } from './WhiteboardCanvas';
+import {
+  renderStrokesToDataUrl,
+  WhiteboardCanvas,
+  WhiteboardPreview,
+} from './WhiteboardCanvas';
 
 interface QuizArenaProps {
   room: Room;
@@ -62,10 +77,22 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
   const [boards, setBoards] = useState<StudentBoard[]>([]);
 
   // Supervisor private draft (never synced to Firestore until "أدرج السؤال" is clicked)
+  const [composerTab, setComposerTab] = useState<'text' | 'board' | 'pdf'>('text');
   const [draftText, setDraftText] = useState('');
   const [draftImage, setDraftImage] = useState('');
+  const [draftBoardStrokes, setDraftBoardStrokes] = useState<Stroke[]>([]);
+  const [pdfPages, setPdfPages] = useState<string[]>([]);
+  const [pdfFileName, setPdfFileName] = useState('');
+  const [selectedPdfPage, setSelectedPdfPage] = useState<number>(1);
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [pdfProgress, setPdfProgress] = useState('');
   const [draftError, setDraftError] = useState<string | null>(null);
   const [insertingQuestion, setInsertingQuestion] = useState(false);
+
+  // Explain Mode shared whiteboard state
+  const [sharedBoardExists, setSharedBoardExists] = useState(false);
+  const [sharedStrokes, setSharedStrokes] = useState<Stroke[]>([]);
+  const [explainBusy, setExplainBusy] = useState(false);
 
   // Student local strokes & sync state
   const [localStrokes, setLocalStrokes] = useState<Stroke[]>([]);
@@ -79,6 +106,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
   const [gradingBusy, setGradingBusy] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const pdfInputRef = useRef<HTMLInputElement | null>(null);
 
   // Subscribe to published questions in the room
   useEffect(() => {
@@ -94,6 +122,29 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
       },
       (err) => {
         handleFirestoreError(err, OperationType.LIST, qPath);
+      }
+    );
+    return () => unsub();
+  }, [room.id]);
+
+  // Subscribe to synchronized Explain Mode shared whiteboard
+  useEffect(() => {
+    const sbPath = `rooms/${room.id}/sharedBoard/live`;
+    const sbRef = doc(db, 'rooms', room.id, 'sharedBoard', 'live');
+    const unsub = onSnapshot(
+      sbRef,
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data() as SharedExplainBoard;
+          setSharedBoardExists(true);
+          setSharedStrokes(data.strokes || []);
+        } else {
+          setSharedBoardExists(false);
+          setSharedStrokes([]);
+        }
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.GET, sbPath);
       }
     );
     return () => unsub();
@@ -189,12 +240,73 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
     }
   };
 
-  // Supervisor: publish question to everyone
+  // Supervisor: upload private PDF and render pages locally (only chosen page is ever sent to Firestore)
+  const handlePdfPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    if (!isPdf) {
+      setDraftError('يرجى اختيار ملف PDF صالح');
+      return;
+    }
+
+    setDraftError(null);
+    setPdfLoading(true);
+    setPdfProgress('جاري قراءة صفحات ملف PDF...');
+    try {
+      const pages = await renderPdfToSlideImages(
+        file,
+        (current, total) => {
+          setPdfProgress(`جاري تجهيز الصفحة ${current} من ${total} (محلياً لدى المشرف فقط)...`);
+        },
+        30
+      );
+      if (pages.length === 0) {
+        setDraftError('لم يتم العثور على صفحات في هذا الملف');
+        return;
+      }
+      setPdfPages(pages);
+      setPdfFileName(file.name);
+      setSelectedPdfPage(1);
+      setComposerTab('pdf');
+      playDuoSound('pop');
+    } catch (err) {
+      setDraftError(err instanceof Error ? err.message : 'تعذر قراءة ملف PDF');
+    } finally {
+      setPdfLoading(false);
+      setPdfProgress('');
+    }
+  };
+
+  // Supervisor: publish question to everyone (supports text, uploaded image, chosen PDF page, or supervisor's private whiteboard)
   const handleInsertQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isSupervisor || insertingQuestion) return;
-    if (!draftText.trim() && !draftImage) {
-      setDraftError('اكتب نص السؤال أو أرفق صورة قبل الضغط على «أدرج السؤال»');
+
+    let finalImageData = '';
+    if (composerTab === 'pdf' && pdfPages.length > 0) {
+      finalImageData = pdfPages[selectedPdfPage - 1] ?? '';
+    } else if (composerTab === 'board') {
+      if (draftBoardStrokes.length > 0) {
+        finalImageData = renderStrokesToDataUrl(draftBoardStrokes);
+      } else if (draftImage) {
+        finalImageData = draftImage;
+      }
+    } else {
+      finalImageData = draftImage;
+      if (!finalImageData && draftBoardStrokes.length > 0) {
+        finalImageData = renderStrokesToDataUrl(draftBoardStrokes);
+      }
+    }
+
+    if (!draftText.trim() && !finalImageData) {
+      setDraftError(
+        composerTab === 'pdf'
+          ? 'ارفع ملف PDF وحدد الصفحة المطلوب إظهارها للطلاب أولاً'
+          : 'اكتب نص السؤال، أو ارفع صورة أو صفحة PDF، أو ارسمه على سبورتك الخاصة قبل الإدراج'
+      );
       return;
     }
     setDraftError(null);
@@ -210,7 +322,7 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
         roomId: room.id,
         orderIndex,
         text: draftText.trim().slice(0, 1000),
-        imageData: draftImage,
+        imageData: finalImageData,
         status: 'solving',
         attemptsUsed: 0,
         wrongStudentIds: [],
@@ -227,11 +339,82 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
       await batch.commit();
       setDraftText('');
       setDraftImage('');
+      setDraftBoardStrokes([]);
       playDuoSound('pop');
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, `rooms/${room.id}/questions/${newQId}`);
     } finally {
       setInsertingQuestion(false);
+    }
+  };
+
+  // Supervisor: toggle between Quiz Mode and Explain Mode
+  const handleToggleExplainMode = async (nextMode: 'quiz' | 'explain') => {
+    if (!isSupervisor || explainBusy) return;
+    setExplainBusy(true);
+    try {
+      await updateDoc(doc(db, 'rooms', room.id), {
+        mode: nextMode,
+        explainPresenterId: profile.uid,
+        explainPresenterName: profile.fullNameQuad,
+        updatedAt: serverTimestamp(),
+      });
+      playDuoSound('pop');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `rooms/${room.id}`);
+    } finally {
+      setExplainBusy(false);
+    }
+  };
+
+  // Supervisor: assign who draws on the shared explain board
+  const handleSelectPresenter = async (presenterId: string, presenterName: string) => {
+    if (!isSupervisor || explainBusy) return;
+    setExplainBusy(true);
+    try {
+      await updateDoc(doc(db, 'rooms', room.id), {
+        mode: 'explain',
+        explainPresenterId: presenterId,
+        explainPresenterName: presenterName,
+        updatedAt: serverTimestamp(),
+      });
+      playDuoSound('pop');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `rooms/${room.id}`);
+    } finally {
+      setExplainBusy(false);
+    }
+  };
+
+  // Active presenter (Supervisor or selected Student): sync shared explain board live
+  const handleSharedStrokesChange = async (nextStrokes: Stroke[]) => {
+    const canDraw =
+      isSupervisor ||
+      (room.mode === 'explain' && room.explainPresenterId === profile.uid);
+    if (!canDraw) return;
+
+    setSharedStrokes(nextStrokes);
+    const sbPath = `rooms/${room.id}/sharedBoard/live`;
+    const sbRef = doc(db, 'rooms', room.id, 'sharedBoard', 'live');
+    try {
+      if (!sharedBoardExists) {
+        await setDoc(sbRef, {
+          roomId: room.id,
+          strokes: nextStrokes,
+          updatedBy: profile.uid,
+          updatedByName: profile.fullNameQuad,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await updateDoc(sbRef, {
+          strokes: nextStrokes,
+          updatedBy: profile.uid,
+          updatedByName: profile.fullNameQuad,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, sbPath);
     }
   };
 
@@ -457,6 +640,11 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
     return { locked: false, title: '', subtitle: '' };
   }, [currentQuestion, myBoard?.submitted, myBoard?.verdict, profile.uid]);
 
+  const isExplainMode = room.mode === 'explain';
+  const canDrawOnSharedBoard =
+    isSupervisor || (isExplainMode && room.explainPresenterId === profile.uid);
+  const currentPresenterName = room.explainPresenterName || room.supervisorName;
+
   const myParticipant = participants.find((p) => p.uid === profile.uid);
   const progressPercent = currentQuestion
     ? currentQuestion.status === 'solving'
@@ -475,7 +663,9 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
               <span className="font-latin text-[#1CB0F6] font-black">{room.id}</span>
             </span>
             <span className="text-base font-black text-[#3C3C3C]">
-              {currentQuestion
+              {isExplainMode
+                ? 'وضع الشرح التفاعلي المباشر'
+                : currentQuestion
                 ? `السؤال رقم ${currentQuestion.orderIndex}`
                 : 'بانتظار إدراج السؤال الأول'}
             </span>
@@ -484,13 +674,15 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
           {/* Iconic Duolingo Glossy Progress Bar */}
           <div className="hidden sm:block flex-1 max-w-md h-4 bg-[#E5E5E5] rounded-full overflow-hidden">
             <div
-              className="duo-progress-fill h-full bg-[#58CC02] rounded-full"
-              style={{ width: `${progressPercent}%` }}
+              className={`duo-progress-fill h-full rounded-full ${
+                isExplainMode ? 'bg-[#1CB0F6]' : 'bg-[#58CC02]'
+              }`}
+              style={{ width: isExplainMode ? '100%' : `${progressPercent}%` }}
             />
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
           {!isSupervisor && (
             <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#DDF4FF] border-2 border-[#1CB0F6]">
               <DuoGemIcon className="w-5 h-5" />
@@ -502,17 +694,135 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
           )}
 
           {isSupervisor && (
-            <button
-              type="button"
-              onClick={() => setShowEndConfirm(true)}
-              className="duo-btn flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-[#FF4B4B] hover:bg-[#FF6161] border-2 border-[#EA2B2B] border-b-4 text-white text-sm font-black cursor-pointer whitespace-nowrap"
-            >
-              <Flag className="w-4 h-4" />
-              <span>إنهاء الاختبار</span>
-            </button>
+            <>
+              {isExplainMode ? (
+                <button
+                  type="button"
+                  disabled={explainBusy}
+                  onClick={() => handleToggleExplainMode('quiz')}
+                  className="duo-btn flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-[#58CC02] hover:bg-[#61E002] border-2 border-[#46A302] border-b-4 text-white text-sm font-black cursor-pointer whitespace-nowrap disabled:opacity-60"
+                >
+                  <ArrowRight className="w-4 h-4" />
+                  <span>العودة لوضع الأسئلة</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={explainBusy}
+                  onClick={() => handleToggleExplainMode('explain')}
+                  className="duo-btn flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-[#1CB0F6] hover:bg-[#33BCFF] border-2 border-[#1899D6] border-b-4 text-white text-sm font-black cursor-pointer whitespace-nowrap disabled:opacity-60"
+                >
+                  <Presentation className="w-4 h-4" />
+                  <span>شرح (سبورة جماعية)</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setShowEndConfirm(true)}
+                className="duo-btn flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-[#FF4B4B] hover:bg-[#FF6161] border-2 border-[#EA2B2B] border-b-4 text-white text-sm font-black cursor-pointer whitespace-nowrap"
+              >
+                <Flag className="w-4 h-4" />
+                <span>إنهاء الاختبار</span>
+              </button>
+            </>
           )}
         </div>
       </div>
+
+      {/* ==================== EXPLAIN MODE (SHARED SYNCHRONIZED BOARD) ==================== */}
+      {isExplainMode ? (
+        <div className="flex flex-col gap-5">
+          {/* Explain Mode Status & Presenter Assignment Card */}
+          <div className="duo-card p-5 sm:p-6 bg-[#DDF4FF]/45 border-[#1CB0F6] flex flex-col gap-4">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-[#1CB0F6] text-white flex items-center justify-center shrink-0">
+                  <Presentation className="w-6 h-6" />
+                </div>
+                <div>
+                  <span className="text-xs font-extrabold text-[#1899D6] block">
+                    السبورة الجماعية المتزامنة للجميع
+                  </span>
+                  <h2 className="text-xl font-black text-[#3C3C3C]">
+                    يشرح الآن: {currentPresenterName}
+                  </h2>
+                </div>
+              </div>
+
+              {!isSupervisor && room.explainPresenterId === profile.uid && (
+                <span className="px-4 py-2 rounded-xl bg-[#D7FFB8] border-2 border-[#58CC02] text-[#46A302] text-sm font-black">
+                  أنت تملك القلم الآن — ارسم وسيظهر شرحك للجميع
+                </span>
+              )}
+
+              {isSupervisor && sharedStrokes.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void handleSharedStrokesChange([])}
+                  className="duo-btn flex items-center gap-1.5 px-4 py-2 rounded-xl bg-white border-2 border-b-4 border-[#E5E5E5] text-xs font-black text-[#EA2B2B] hover:bg-[#FFDFE0] cursor-pointer"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>مسح سبورة الشرح للجميع</span>
+                </button>
+              )}
+            </div>
+
+            {/* Supervisor Presenter Picker (Supervisor or Any Student) */}
+            {isSupervisor && (
+              <div className="pt-3 border-t-2 border-[#BCE8FF] flex flex-col gap-2.5">
+                <div className="flex items-center gap-2 text-xs font-extrabold text-[#1899D6]">
+                  <Users className="w-4 h-4" />
+                  <span>اختر من يكتب ويشرح على السبورة الآن (المشرف أو أحد الطلاب):</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={explainBusy}
+                    onClick={() => handleSelectPresenter(profile.uid, profile.fullNameQuad)}
+                    className={`duo-btn px-4 py-2 rounded-xl border-2 border-b-4 text-xs font-black cursor-pointer whitespace-nowrap ${
+                      room.explainPresenterId === profile.uid
+                        ? 'bg-[#58CC02] border-[#46A302] text-white'
+                        : 'bg-white border-[#E5E5E5] text-[#3C3C3C] hover:bg-[#F7F7F7]'
+                    }`}
+                  >
+                    المشرف (أنت)
+                  </button>
+
+                  {participants.map((p) => {
+                    const active = room.explainPresenterId === p.uid;
+                    return (
+                      <button
+                        key={p.uid}
+                        type="button"
+                        disabled={explainBusy}
+                        onClick={() => handleSelectPresenter(p.uid, p.fullNameQuad)}
+                        className={`duo-btn px-4 py-2 rounded-xl border-2 border-b-4 text-xs font-black cursor-pointer whitespace-nowrap ${
+                          active
+                            ? 'bg-[#FFC800] border-[#E5A400] text-[#3C3C3C]'
+                            : 'bg-white border-[#E5E5E5] text-[#3C3C3C] hover:bg-[#F7F7F7]'
+                        }`}
+                      >
+                        {p.fullNameQuad}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Synchronized Explain Whiteboard */}
+          <WhiteboardCanvas
+            strokes={sharedStrokes}
+            onStrokesChange={(next) => void handleSharedStrokesChange(next)}
+            viewOnly={!canDrawOnSharedBoard}
+            syncIntervalMs={220}
+            heightClass="h-[460px] md:h-[560px]"
+          />
+        </div>
+      ) : (
+        <>
 
       {/* Active Question Banner (Visible to everyone ONLY after supervisor inserts it) */}
       {currentQuestion ? (
@@ -578,16 +888,16 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
               <button
                 type="button"
                 onClick={() => setZoomedImage(currentQuestion.imageData)}
-                className="group relative rounded-2xl overflow-hidden border-2 border-[#E5E5E5] bg-[#F7F7F7] max-w-xs cursor-pointer shrink-0"
+                className="group relative rounded-2xl overflow-hidden border-2 border-[#E5E5E5] bg-[#F7F7F7] max-w-md cursor-pointer shrink-0"
               >
                 <img
                   src={currentQuestion.imageData}
                   alt="صورة السؤال"
-                  className="max-h-48 w-auto object-contain"
+                  className="max-h-64 w-auto object-contain"
                 />
                 <span className="absolute bottom-2 left-2 bg-black/70 text-white text-xs font-bold px-2.5 py-1 rounded-lg flex items-center gap-1">
                   <ZoomIn className="w-3.5 h-3.5" />
-                  <span>تكبير الصورة</span>
+                  <span>تكبير الصفحة / الصورة</span>
                 </span>
               </button>
             )}
@@ -682,90 +992,309 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
               onSubmit={handleInsertQuestion}
               className="duo-card p-5 sm:p-6 flex flex-col gap-4 border-[#1CB0F6]"
             >
-              <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
                   <EyeOff className="w-5 h-5 text-[#1899D6]" />
                   <h3 className="text-lg font-black text-[#3C3C3C]">
                     إعداد السؤال {questions.length + 1} (خاص بالمشرف فقط)
                   </h3>
                 </div>
-                <span className="text-xs font-extrabold text-[#1899D6]">
-                  لا يظهر للطلاب حتى تضغط «أدرج السؤال»
-                </span>
+
+                {/* Mode Tabs: Text/Image, PDF Page Picker, OR Supervisor's Private Whiteboard */}
+                <div className="flex flex-wrap items-center gap-1 p-1 bg-[#F7F7F7] border-2 border-[#E5E5E5] rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => setComposerTab('text')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-colors cursor-pointer whitespace-nowrap ${
+                      composerTab === 'text'
+                        ? 'bg-white text-[#1899D6] shadow-sm'
+                        : 'text-[#777777] hover:text-[#3C3C3C]'
+                    }`}
+                  >
+                    <Type className="w-3.5 h-3.5" />
+                    <span>كتابة نص / صورة</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setComposerTab('pdf')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-colors cursor-pointer whitespace-nowrap ${
+                      composerTab === 'pdf'
+                        ? 'bg-white text-[#9A6B00] shadow-sm'
+                        : 'text-[#777777] hover:text-[#3C3C3C]'
+                    }`}
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>
+                      {pdfPages.length > 0
+                        ? `صفحة من PDF (${pdfPages.length})`
+                        : 'تحديد صفحة من PDF'}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setComposerTab('board')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-colors cursor-pointer whitespace-nowrap ${
+                      composerTab === 'board'
+                        ? 'bg-white text-[#46A302] shadow-sm'
+                        : 'text-[#777777] hover:text-[#3C3C3C]'
+                    }`}
+                  >
+                    <PenTool className="w-3.5 h-3.5" />
+                    <span>رسم على سبورة المشرف</span>
+                  </button>
+                </div>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                <div className="lg:col-span-2 flex flex-col gap-2">
-                  <label
-                    htmlFor="question-draft-text"
-                    className="text-xs font-extrabold text-[#3C3C3C]"
-                  >
-                    نص السؤال
-                  </label>
-                  <textarea
-                    id="question-draft-text"
-                    rows={3}
+              {composerTab === 'text' ? (
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <div className="lg:col-span-2 flex flex-col gap-2">
+                    <label
+                      htmlFor="question-draft-text"
+                      className="text-xs font-extrabold text-[#3C3C3C]"
+                    >
+                      نص السؤال
+                    </label>
+                    <textarea
+                      id="question-draft-text"
+                      rows={3}
+                      maxLength={1000}
+                      value={draftText}
+                      onChange={(e) => setDraftText(e.target.value)}
+                      placeholder="اكتب سؤالك هنا... (أو اختر صفحة من ملف PDF أو ارسمه على سبورة المشرف)"
+                      className="w-full px-4 py-3 rounded-2xl bg-[#F7F7F7] border-2 border-[#E5E5E5] focus:border-[#1CB0F6] focus:bg-white outline-none text-base font-bold text-[#3C3C3C] resize-none"
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <span className="text-xs font-extrabold text-[#3C3C3C]">
+                      صورة السؤال (اختياري)
+                    </span>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleImagePick}
+                      className="hidden"
+                    />
+                    {draftImage ? (
+                      <div className="relative rounded-2xl border-2 border-[#E5E5E5] bg-[#F7F7F7] p-2 flex items-center justify-center h-28">
+                        <img
+                          src={draftImage}
+                          alt="معاينة الصورة"
+                          className="max-h-full max-w-full object-contain rounded-lg"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setDraftImage('')}
+                          className="absolute top-2 left-2 p-1.5 rounded-lg bg-[#FF4B4B] text-white cursor-pointer"
+                          title="حذف الصورة"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="duo-btn h-28 rounded-2xl border-2 border-dashed border-[#1CB0F6] bg-[#DDF4FF]/40 hover:bg-[#DDF4FF] flex flex-col items-center justify-center gap-2 text-[#1899D6] font-extrabold text-sm cursor-pointer"
+                      >
+                        <ImagePlus className="w-6 h-6" />
+                        <span>رفع صورة من جهازك</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ) : composerTab === 'pdf' ? (
+                <div className="flex flex-col gap-4">
+                  <input
+                    ref={pdfInputRef}
+                    type="file"
+                    accept="application/pdf"
+                    onChange={handlePdfPick}
+                    className="hidden"
+                  />
+
+                  {pdfLoading ? (
+                    <div className="p-8 rounded-2xl bg-[#FFF4CC]/60 border-2 border-[#FFC800] text-center text-sm font-black text-[#9A6B00]">
+                      {pdfProgress || 'جاري تجهيز صفحات ملف PDF...'}
+                    </div>
+                  ) : pdfPages.length === 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => pdfInputRef.current?.click()}
+                      className="duo-btn py-10 px-6 rounded-2xl border-2 border-dashed border-[#FFC800] bg-[#FFF4CC]/40 hover:bg-[#FFF4CC]/75 flex flex-col items-center justify-center gap-2.5 text-[#9A6B00] cursor-pointer"
+                    >
+                      <FileText className="w-9 h-9" />
+                      <span className="text-base font-black">
+                        ارفع ملف PDF خاص بك لتحديد صفحة واحدة وإظهارها للطلاب
+                      </span>
+                      <span className="text-xs font-bold text-[#777777]">
+                        لا يظهر الملف للطلاب نهائياً — تظهر فقط الصفحة التي تحددها وتضغط إظهارها
+                      </span>
+                    </button>
+                  ) : (
+                    <div className="flex flex-col gap-3 bg-[#F7F7F7] border-2 border-[#E5E5E5] rounded-2xl p-4">
+                      {/* PDF Header & Page Picker */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b-2 border-[#E5E5E5]">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <FileText className="w-4 h-4 text-[#9A6B00] shrink-0" />
+                          <span className="text-xs font-black text-[#3C3C3C] truncate max-w-[220px]">
+                            {pdfFileName}
+                          </span>
+                          <span className="font-latin text-xs font-extrabold text-[#777777]">
+                            ({pdfPages.length} صفحة)
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => pdfInputRef.current?.click()}
+                            className="duo-btn px-3 py-1.5 rounded-xl bg-white border-2 border-b-3 border-[#E5E5E5] text-xs font-black text-[#1899D6] cursor-pointer"
+                          >
+                            تغيير ملف PDF
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPdfPages([]);
+                              setPdfFileName('');
+                              setSelectedPdfPage(1);
+                            }}
+                            className="duo-btn px-3 py-1.5 rounded-xl bg-white border-2 border-b-3 border-[#E5E5E5] text-xs font-black text-[#EA2B2B] cursor-pointer"
+                          >
+                            إزالة
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Page Selector Strip */}
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={selectedPdfPage <= 1}
+                            onClick={() => setSelectedPdfPage((p) => Math.max(1, p - 1))}
+                            className="duo-btn flex items-center gap-1 px-3 py-1.5 rounded-xl bg-white border-2 border-b-3 border-[#E5E5E5] text-xs font-black text-[#3C3C3C] cursor-pointer disabled:opacity-40"
+                          >
+                            <ChevronRight className="w-4 h-4" />
+                            <span>السابقة</span>
+                          </button>
+                          <span className="font-latin px-3 py-1 rounded-xl bg-[#FFC800] text-[#3C3C3C] text-xs font-black">
+                            الصفحة المحددة: {selectedPdfPage} / {pdfPages.length}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={selectedPdfPage >= pdfPages.length}
+                            onClick={() =>
+                              setSelectedPdfPage((p) => Math.min(pdfPages.length, p + 1))
+                            }
+                            className="duo-btn flex items-center gap-1 px-3 py-1.5 rounded-xl bg-white border-2 border-b-3 border-[#E5E5E5] text-xs font-black text-[#3C3C3C] cursor-pointer disabled:opacity-40"
+                          >
+                            <span>التالية</span>
+                            <ChevronLeft className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 overflow-x-auto max-w-full py-1">
+                          {pdfPages.map((_, idx) => {
+                            const pageNum = idx + 1;
+                            return (
+                              <button
+                                key={pageNum}
+                                type="button"
+                                onClick={() => setSelectedPdfPage(pageNum)}
+                                className={`font-latin min-w-[30px] h-7 px-2 rounded-lg text-xs font-black cursor-pointer shrink-0 ${
+                                  selectedPdfPage === pageNum
+                                    ? 'bg-[#1CB0F6] text-white border-2 border-[#1899D6]'
+                                    : 'bg-white text-[#777777] border border-[#E5E5E5] hover:text-[#3C3C3C]'
+                                }`}
+                              >
+                                {pageNum}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Optional Note + Private Preview of Selected Page */}
+                      <input
+                        type="text"
+                        maxLength={1000}
+                        value={draftText}
+                        onChange={(e) => setDraftText(e.target.value)}
+                        placeholder={`ملاحظة أو عنوان للطلاب مع الصفحة ${selectedPdfPage} (اختياري، مثال: حل التمرين رقم 2)...`}
+                        className="w-full px-4 py-2.5 rounded-2xl bg-white border-2 border-[#E5E5E5] focus:border-[#1CB0F6] outline-none text-sm font-bold text-[#3C3C3C]"
+                      />
+
+                      <div className="rounded-2xl border-2 border-[#E5E5E5] bg-white p-2 flex items-center justify-center max-h-[340px] overflow-hidden">
+                        <img
+                          src={pdfPages[selectedPdfPage - 1]}
+                          alt={`معاينة صفحة ${selectedPdfPage}`}
+                          className="max-h-[315px] w-auto object-contain rounded-lg"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-extrabold text-[#46A302]">
+                      اكتب أو ارسم سؤالك على سبورتك السرية هنا (لا يراه الطلاب إلا بعد الضغط على «أدرج السؤال»)
+                    </span>
+                    {draftImage && (
+                      <span className="text-xs font-bold text-[#777777]">
+                        ملاحظة: توجد صورة مرفوعة — احذفها إذا أردت اعتماد رسم السبورة كصورة للسؤال
+                      </span>
+                    )}
+                  </div>
+
+                  <input
+                    type="text"
                     maxLength={1000}
                     value={draftText}
                     onChange={(e) => setDraftText(e.target.value)}
-                    placeholder="اكتب سؤالك هنا... (أو أرفق صورة من اليسار)"
-                    className="w-full px-4 py-3 rounded-2xl bg-[#F7F7F7] border-2 border-[#E5E5E5] focus:border-[#1CB0F6] focus:bg-white outline-none text-base font-bold text-[#3C3C3C] resize-none"
+                    placeholder="عنوان أو نص مختصر للسؤال (اختياري)..."
+                    className="w-full px-4 py-2.5 rounded-2xl bg-[#F7F7F7] border-2 border-[#E5E5E5] focus:border-[#58CC02] focus:bg-white outline-none text-sm font-bold text-[#3C3C3C]"
                   />
-                </div>
 
-                <div className="flex flex-col gap-2">
-                  <span className="text-xs font-extrabold text-[#3C3C3C]">
-                    صورة السؤال (اختياري)
-                  </span>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    onChange={handleImagePick}
-                    className="hidden"
+                  <WhiteboardCanvas
+                    strokes={draftBoardStrokes}
+                    onStrokesChange={setDraftBoardStrokes}
+                    heightClass="h-[340px] md:h-[400px]"
                   />
-                  {draftImage ? (
-                    <div className="relative rounded-2xl border-2 border-[#E5E5E5] bg-[#F7F7F7] p-2 flex items-center justify-center h-28">
-                      <img
-                        src={draftImage}
-                        alt="معاينة الصورة"
-                        className="max-h-full max-w-full object-contain rounded-lg"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setDraftImage('')}
-                        className="absolute top-2 left-2 p-1.5 rounded-lg bg-[#FF4B4B] text-white cursor-pointer"
-                        title="حذف الصورة"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      className="duo-btn h-28 rounded-2xl border-2 border-dashed border-[#1CB0F6] bg-[#DDF4FF]/40 hover:bg-[#DDF4FF] flex flex-col items-center justify-center gap-2 text-[#1899D6] font-extrabold text-sm cursor-pointer"
-                    >
-                      <ImagePlus className="w-6 h-6" />
-                      <span>رفع صورة من جهازك</span>
-                    </button>
-                  )}
                 </div>
-              </div>
+              )}
 
               {draftError && (
                 <p className="text-sm font-extrabold text-[#EA2B2B]">{draftError}</p>
               )}
 
-              <div className="flex justify-end">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span className="text-xs font-bold text-[#777777]">
+                  {composerTab === 'pdf' && pdfPages.length > 0
+                    ? `ستظهر الصفحة رقم ${selectedPdfPage} فقط للطلاب ليبدأوا الحل على سبوراتهم`
+                    : draftBoardStrokes.length > 0 && !draftImage
+                    ? 'سيتم إرفاق رسم سبورتك الخاصة مع السؤال تلقائياً'
+                    : 'لا يظهر للطلاب أي شيء حتى تضغط زر الإدراج'}
+                </span>
                 <button
                   type="submit"
-                  disabled={insertingQuestion}
+                  disabled={insertingQuestion || pdfLoading}
                   className="duo-btn flex items-center gap-2.5 px-8 py-3.5 rounded-2xl bg-[#58CC02] hover:bg-[#61E002] border-2 border-[#46A302] border-b-[5px] text-white text-base font-black cursor-pointer disabled:opacity-60"
                 >
-                  <Send className="w-5 h-5" />
+                  {composerTab === 'pdf' && pdfPages.length > 0 ? (
+                    <Eye className="w-5 h-5" />
+                  ) : (
+                    <Send className="w-5 h-5" />
+                  )}
                   <span>
-                    {insertingQuestion ? 'جاري النشر...' : 'أدرج السؤال للجميع'}
+                    {insertingQuestion
+                      ? 'جاري النشر...'
+                      : composerTab === 'pdf' && pdfPages.length > 0
+                      ? `إظهار صفحة ${selectedPdfPage} وإدراجها للجميع`
+                      : 'أدرج السؤال للجميع'}
                   </span>
                 </button>
               </div>
@@ -897,6 +1426,8 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
             </button>
           </div>
         </div>
+      )}
+        </>
       )}
 
       {/* Zoomed Question Image Modal */}

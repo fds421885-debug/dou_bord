@@ -44,10 +44,14 @@ service cloud.firestore {
     function isValidRoom(data) {
       return data.keys().hasAll([
           'id', 'title', 'supervisorId', 'supervisorName', 'status',
+          'sessionType', 'mode', 'explainPresenterId', 'explainPresenterName',
+          'interactiveEditor', 'interactiveEditorName', 'currentSlideIndex', 'slideCount',
           'currentQuestionId', 'questionCount', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
           'id', 'title', 'supervisorId', 'supervisorName', 'status',
+          'sessionType', 'mode', 'explainPresenterId', 'explainPresenterName',
+          'interactiveEditor', 'interactiveEditorName', 'currentSlideIndex', 'slideCount',
           'currentQuestionId', 'questionCount', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.id)
@@ -55,9 +59,56 @@ service cloud.firestore {
         && isValidId(data.supervisorId)
         && data.supervisorName is string && data.supervisorName.size() >= 5 && data.supervisorName.size() <= 120
         && data.status in ['waiting', 'active', 'finished']
+        && data.sessionType in ['quiz', 'interactive']
+        && data.mode in ['quiz', 'explain']
+        && data.explainPresenterId is string && data.explainPresenterId.size() <= 128
+        && data.explainPresenterName is string && data.explainPresenterName.size() <= 120
+        && data.interactiveEditor is string && data.interactiveEditor.size() >= 1 && data.interactiveEditor.size() <= 128
+        && data.interactiveEditorName is string && data.interactiveEditorName.size() >= 1 && data.interactiveEditorName.size() <= 120
+        && data.currentSlideIndex is int && data.currentSlideIndex >= 0 && data.currentSlideIndex <= 100
+        && data.slideCount is int && data.slideCount >= 0 && data.slideCount <= 100
         && data.currentQuestionId is string && data.currentQuestionId.size() <= 128
         && data.questionCount is int && data.questionCount >= 0 && data.questionCount <= 200
         && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSharedBoard(data) {
+      return data.keys().hasAll([
+          'roomId', 'strokes', 'updatedBy', 'updatedByName', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'roomId', 'strokes', 'updatedBy', 'updatedByName', 'updatedAt'
+        ])
+        && isValidId(data.roomId)
+        && data.strokes is list && data.strokes.size() <= 400
+        && (data.strokes.size() == 0 || data.strokes[0] is map)
+        && isValidId(data.updatedBy)
+        && data.updatedBy == request.auth.uid
+        && data.updatedByName is string && data.updatedByName.size() >= 1 && data.updatedByName.size() <= 120
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSlide(data) {
+      return data.keys().hasAll(['id', 'roomId', 'pageIndex', 'imageData', 'createdAt'])
+        && data.keys().hasOnly(['id', 'roomId', 'pageIndex', 'imageData', 'createdAt'])
+        && isValidId(data.id)
+        && isValidId(data.roomId)
+        && data.pageIndex is int && data.pageIndex >= 1 && data.pageIndex <= 100
+        && data.imageData is string && data.imageData.size() >= 10 && data.imageData.size() <= 480000
+        && data.createdAt is timestamp;
+    }
+
+    function isValidSlideLayer(data) {
+      return data.keys().hasAll(['id', 'roomId', 'slideId', 'authorId', 'authorName', 'strokes', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'roomId', 'slideId', 'authorId', 'authorName', 'strokes', 'updatedAt'])
+        && isValidId(data.id)
+        && isValidId(data.roomId)
+        && isValidId(data.slideId)
+        && isValidId(data.authorId)
+        && data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 120
+        && data.strokes is list && data.strokes.size() <= 400
+        && (data.strokes.size() == 0 || data.strokes[0] is map)
         && data.updatedAt is timestamp;
     }
 
@@ -90,7 +141,7 @@ service cloud.firestore {
         && isValidId(data.roomId)
         && data.orderIndex is int && data.orderIndex >= 1 && data.orderIndex <= 200
         && data.text is string && data.text.size() <= 1000
-        && data.imageData is string && data.imageData.size() <= 280000
+        && data.imageData is string && data.imageData.size() <= 480000
         && data.status in ['solving', 'correct', 'unanswered']
         && data.attemptsUsed is int && data.attemptsUsed >= 0 && data.attemptsUsed <= 2
         && data.wrongStudentIds is list && data.wrongStudentIds.size() <= 2
@@ -159,7 +210,7 @@ service cloud.firestore {
         && data.ownerId == request.auth.uid
         && data.orderIndex is int && data.orderIndex >= 1 && data.orderIndex <= 200
         && data.text is string && data.text.size() <= 1000
-        && data.imageData is string && data.imageData.size() <= 280000
+        && data.imageData is string && data.imageData.size() <= 480000
         && data.status in ['solving', 'correct', 'unanswered']
         && data.winnerName is string && data.winnerName.size() <= 120
         && data.boards is list && data.boards.size() <= 100
@@ -222,6 +273,9 @@ service cloud.firestore {
         && incoming().id == roomId
         && incoming().supervisorId == request.auth.uid
         && incoming().status == 'waiting'
+        && incoming().mode == 'quiz'
+        && incoming().currentSlideIndex == 0
+        && incoming().slideCount == 0
         && incoming().currentQuestionId == ''
         && incoming().questionCount == 0
         && incoming().createdAt == request.time
@@ -233,6 +287,7 @@ service cloud.firestore {
         && incoming().id == existing().id
         && incoming().supervisorId == existing().supervisorId
         && incoming().supervisorName == existing().supervisorName
+        && incoming().sessionType == existing().sessionType
         && incoming().title == existing().title
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
@@ -241,9 +296,130 @@ service cloud.firestore {
             && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
           || (existing().status == 'active'
             && incoming().diff(existing()).affectedKeys().hasOnly(['currentQuestionId', 'questionCount', 'updatedAt']))
+          || (existing().status == 'active'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['mode', 'explainPresenterId', 'explainPresenterName', 'updatedAt']))
+          || (existing().status == 'active'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['currentSlideIndex', 'slideCount', 'updatedAt']))
+          || (existing().status == 'active'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['interactiveEditor', 'interactiveEditorName', 'updatedAt']))
           || (incoming().status == 'finished'
             && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
         );
+
+      match /slides/{slideId} {
+        allow get: if isValidId(roomId) && isValidId(slideId) && isVerified()
+          && (
+            get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
+            || exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid))
+          );
+        allow list: if isValidId(roomId) && isVerified() && resource.data.roomId == roomId;
+        allow create: if isValidId(roomId) && isValidId(slideId) && isVerified()
+          && isValidSlide(incoming())
+          && incoming().id == slideId
+          && incoming().roomId == roomId
+          && incoming().createdAt == request.time
+          && get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
+          && get(/databases/$(database)/documents/rooms/$(roomId)).data.sessionType == 'interactive'
+          && get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'active';
+        allow delete: if isValidId(roomId) && isValidId(slideId) && isVerified()
+          && get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
+          && get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'active';
+
+        match /layers/{layerId} {
+          allow get: if isValidId(roomId) && isValidId(slideId) && isValidId(layerId) && isVerified()
+            && (
+              get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
+              || exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid))
+            );
+          allow list: if isValidId(roomId) && isValidId(slideId) && isVerified()
+            && resource.data.roomId == roomId && resource.data.slideId == slideId;
+          allow create: if isValidId(roomId) && isValidId(slideId) && isValidId(layerId) && isVerified()
+            && layerId == request.auth.uid
+            && isValidSlideLayer(incoming())
+            && incoming().id == layerId
+            && incoming().authorId == request.auth.uid
+            && incoming().roomId == roomId
+            && incoming().slideId == slideId
+            && incoming().updatedAt == request.time
+            && exists(/databases/$(database)/documents/rooms/$(roomId)/slides/$(slideId))
+            && get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'active'
+            && get(/databases/$(database)/documents/rooms/$(roomId)).data.sessionType == 'interactive'
+            && (
+              get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
+              || (
+                exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid))
+                && (
+                  get(/databases/$(database)/documents/rooms/$(roomId)).data.interactiveEditor == 'all'
+                  || get(/databases/$(database)/documents/rooms/$(roomId)).data.interactiveEditor == request.auth.uid
+                )
+              )
+            );
+          allow update: if isValidId(roomId) && isValidId(slideId) && isValidId(layerId) && isVerified()
+            && isValidSlideLayer(incoming())
+            && incoming().id == existing().id
+            && incoming().roomId == existing().roomId
+            && incoming().slideId == existing().slideId
+            && incoming().authorId == existing().authorId
+            && incoming().authorName == existing().authorName
+            && incoming().updatedAt == request.time
+            && get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'active'
+            && get(/databases/$(database)/documents/rooms/$(roomId)).data.sessionType == 'interactive'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['strokes', 'updatedAt'])
+            && (
+              get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
+              || (
+                layerId == request.auth.uid
+                && exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid))
+                && (
+                  get(/databases/$(database)/documents/rooms/$(roomId)).data.interactiveEditor == 'all'
+                  || get(/databases/$(database)/documents/rooms/$(roomId)).data.interactiveEditor == request.auth.uid
+                )
+              )
+            );
+          allow delete: if isValidId(roomId) && isValidId(slideId) && isValidId(layerId) && isVerified()
+            && (
+              layerId == request.auth.uid
+              || get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
+            );
+        }
+      }
+
+      match /sharedBoard/{boardId} {
+        allow get: if isValidId(roomId) && isValidId(boardId) && isVerified()
+          && (
+            get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
+            || exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid))
+          );
+        allow create: if isValidId(roomId) && isValidId(boardId) && isVerified()
+          && boardId == 'live'
+          && isValidSharedBoard(incoming())
+          && incoming().roomId == roomId
+          && incoming().updatedAt == request.time
+          && get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'active'
+          && (
+            get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
+            || (
+              get(/databases/$(database)/documents/rooms/$(roomId)).data.mode == 'explain'
+              && get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == request.auth.uid
+              && exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid))
+            )
+          );
+        allow update: if isValidId(roomId) && isValidId(boardId) && isVerified()
+          && boardId == 'live'
+          && isValidSharedBoard(incoming())
+          && incoming().roomId == existing().roomId
+          && incoming().updatedAt == request.time
+          && get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'active'
+          && (
+            get(/databases/$(database)/documents/rooms/$(roomId)).data.supervisorId == request.auth.uid
+            || (
+              get(/databases/$(database)/documents/rooms/$(roomId)).data.mode == 'explain'
+              && get(/databases/$(database)/documents/rooms/$(roomId)).data.explainPresenterId == request.auth.uid
+              && exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid))
+            )
+          )
+          && incoming().diff(existing()).affectedKeys().hasOnly(['strokes', 'updatedBy', 'updatedByName', 'updatedAt']);
+      }
 
       match /participants/{participantId} {
         allow get: if isValidId(roomId) && isValidId(participantId) && isVerified()

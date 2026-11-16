@@ -59,10 +59,23 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
             alt="أيقونة غرفة الانتظار"
             className="w-24 h-24 shrink-0"
           />
-          <div className="flex flex-col gap-1">
-            <span className="text-xs font-extrabold text-[#58CC02]">
-              {isSupervisor ? 'غرفة انتظار المشرف' : 'غرفة انتظار الطالب'}
-            </span>
+          <div className="flex flex-col gap-1.5">
+            <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
+              <span className="text-xs font-extrabold text-[#58CC02]">
+                {isSupervisor ? 'غرفة انتظار المشرف' : 'غرفة انتظار الطالب'}
+              </span>
+              <span
+                className={`px-2.5 py-0.5 rounded-lg text-[11px] font-black border ${
+                  room.sessionType === 'interactive'
+                    ? 'bg-[#DDF4FF] border-[#1CB0F6] text-[#1899D6]'
+                    : 'bg-[#D7FFB8] border-[#58CC02] text-[#46A302]'
+                }`}
+              >
+                {room.sessionType === 'interactive'
+                  ? 'وضع تفاعلي — PDF وصور'
+                  : 'وضع اختبار'}
+              </span>
+            </div>
             <h1 className="text-2xl sm:text-3xl font-black text-[#3C3C3C]">
               {room.title}
             </h1>

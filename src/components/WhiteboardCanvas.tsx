@@ -31,11 +31,15 @@ export function renderStrokesToCanvas(
   ctx: CanvasRenderingContext2D,
   strokes: Stroke[],
   width: number,
-  height: number
+  height: number,
+  transparentBg = false
 ) {
   ctx.save();
-  ctx.fillStyle = '#FFFFFF';
-  ctx.fillRect(0, 0, width, height);
+  ctx.clearRect(0, 0, width, height);
+  if (!transparentBg) {
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, width, height);
+  }
 
   const scaleX = width / BOARD_WIDTH;
   const scaleY = height / BOARD_HEIGHT;
@@ -49,7 +53,13 @@ export function renderStrokesToCanvas(
     if (!pts || pts.length < 2) continue;
 
     ctx.beginPath();
-    ctx.strokeStyle = stroke.isEraser ? '#FFFFFF' : stroke.color;
+    if (stroke.isEraser && transparentBg) {
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.strokeStyle = 'rgba(0,0,0,1)';
+    } else {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = stroke.isEraser ? '#FFFFFF' : stroke.color;
+    }
     ctx.lineWidth = stroke.isEraser ? Math.max(stroke.width * 2.4, 24) : stroke.width;
 
     ctx.moveTo(pts[0], pts[1]);
@@ -72,11 +82,29 @@ export function renderStrokesToCanvas(
   ctx.restore();
 }
 
+export function renderStrokesToDataUrl(strokes: Stroke[]): string {
+  const canvas = document.createElement('canvas');
+  canvas.width = 960;
+  canvas.height = 560;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return '';
+  renderStrokesToCanvas(ctx, strokes, canvas.width, canvas.height);
+  const pngUrl = canvas.toDataURL('image/png');
+  if (pngUrl.length <= 240000) return pngUrl;
+  return canvas.toDataURL('image/jpeg', 0.78);
+}
+
 export const WhiteboardPreview: React.FC<{
   strokes: Stroke[];
+  backgroundImage?: string;
   className?: string;
   emptyText?: string;
-}> = ({ strokes, className = 'w-full aspect-[12/7]', emptyText = 'لم يكتب بعد' }) => {
+}> = ({
+  strokes,
+  backgroundImage,
+  className = 'w-full aspect-[12/7]',
+  emptyText = 'لم يكتب بعد',
+}) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -84,18 +112,25 @@ export const WhiteboardPreview: React.FC<{
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    renderStrokesToCanvas(ctx, strokes, canvas.width, canvas.height);
-  }, [strokes]);
+    renderStrokesToCanvas(ctx, strokes, canvas.width, canvas.height, Boolean(backgroundImage));
+  }, [strokes, backgroundImage]);
 
   return (
     <div className={`relative rounded-xl overflow-hidden bg-white border-2 border-[#E5E5E5] ${className}`}>
+      {backgroundImage && (
+        <img
+          src={backgroundImage}
+          alt="خلفية الصفحة"
+          className="absolute inset-0 w-full h-full object-contain pointer-events-none select-none"
+        />
+      )}
       <canvas
         ref={canvasRef}
         width={600}
         height={350}
-        className="w-full h-full block object-contain"
+        className="relative z-[1] w-full h-full block object-contain bg-transparent"
       />
-      {strokes.length === 0 && (
+      {strokes.length === 0 && !backgroundImage && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <span className="text-xs font-bold text-[#AFAFAF]">{emptyText}</span>
         </div>
@@ -107,7 +142,11 @@ export const WhiteboardPreview: React.FC<{
 interface WhiteboardCanvasProps {
   strokes: Stroke[];
   onStrokesChange: (next: Stroke[]) => void;
+  backgroundImage?: string;
+  overlayStrokeLayers?: Stroke[][];
   disabled?: boolean;
+  viewOnly?: boolean;
+  syncIntervalMs?: number;
   lockTitle?: string;
   lockSubtitle?: string;
   heightClass?: string;
@@ -116,12 +155,17 @@ interface WhiteboardCanvasProps {
 export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   strokes,
   onStrokesChange,
+  backgroundImage,
+  overlayStrokeLayers = [],
   disabled = false,
+  viewOnly = false,
+  syncIntervalMs = 550,
   lockTitle = 'السبورة مقفلة حالياً',
   lockSubtitle = 'بانتظار المشرف لإدراج السؤال',
   heightClass = 'h-[430px] md:h-[520px]',
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
 
   const [tool, setTool] = useState<'pen' | 'eraser' | 'pan'>('pen');
@@ -156,12 +200,33 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     const combined = activeStrokeRef.current
       ? [...localStrokesRef.current, activeStrokeRef.current]
       : localStrokesRef.current;
-    renderStrokesToCanvas(ctx, combined, BOARD_WIDTH, BOARD_HEIGHT);
+    renderStrokesToCanvas(ctx, combined, BOARD_WIDTH, BOARD_HEIGHT, true);
   }, []);
 
   useEffect(() => {
     redraw();
   }, [strokes, redraw]);
+
+  useEffect(() => {
+    const overlayCanvas = overlayCanvasRef.current;
+    if (!overlayCanvas) return;
+    const ctx = overlayCanvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, BOARD_WIDTH, BOARD_HEIGHT);
+    if (overlayStrokeLayers.length === 0) return;
+
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = BOARD_WIDTH;
+    tempCanvas.height = BOARD_HEIGHT;
+    const tempCtx = tempCanvas.getContext('2d');
+    if (!tempCtx) return;
+
+    for (const layerStrokes of overlayStrokeLayers) {
+      if (!layerStrokes || layerStrokes.length === 0) continue;
+      renderStrokesToCanvas(tempCtx, layerStrokes, BOARD_WIDTH, BOARD_HEIGHT, true);
+      ctx.drawImage(tempCanvas, 0, 0);
+    }
+  }, [overlayStrokeLayers]);
 
   const getBoardPoint = (clientX: number, clientY: number): { x: number; y: number } | null => {
     const canvas = canvasRef.current;
@@ -177,7 +242,19 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (disabled && tool !== 'pan') return;
+    if (disabled || viewOnly) {
+      if (tool === 'pan' || viewOnly || e.button === 1) {
+        isPanningRef.current = true;
+        panStartRef.current = {
+          x: e.clientX,
+          y: e.clientY,
+          origX: pan.x,
+          origY: pan.y,
+        };
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }
+      return;
+    }
 
     if (tool === 'pan' || e.button === 1) {
       isPanningRef.current = true;
@@ -190,8 +267,6 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       e.currentTarget.setPointerCapture(e.pointerId);
       return;
     }
-
-    if (disabled) return;
 
     const pt = getBoardPoint(e.clientX, e.clientY);
     if (!pt) return;
@@ -218,7 +293,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       return;
     }
 
-    if (!isDrawingRef.current || !activeStrokeRef.current || disabled) return;
+    if (!isDrawingRef.current || !activeStrokeRef.current || disabled || viewOnly) return;
     const pt = getBoardPoint(e.clientX, e.clientY);
     if (!pt) return;
 
@@ -235,7 +310,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     }
 
     const now = Date.now();
-    if (now - lastSyncRef.current > 550) {
+    if (now - lastSyncRef.current > syncIntervalMs) {
       lastSyncRef.current = now;
       const snapshot = [...localStrokesRef.current, { ...activeStrokeRef.current, pts: [...pts] }];
       onStrokesChange(snapshot.slice(-380));
@@ -283,7 +358,12 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     <div className="flex flex-col gap-3">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-2 bg-[#F7F7F7] border-2 border-[#E5E5E5] rounded-2xl p-2.5">
-        {/* Colors & Tools */}
+        {viewOnly ? (
+          <div className="flex items-center gap-2 px-2 py-1 text-xs font-black text-[#1899D6]">
+            <span>وضع المشاهدة المباشرة — يمكنك التكبير أو التحريك لمتابعة الشرح</span>
+          </div>
+        ) : (
+        /* Colors & Tools */
         <div className="flex flex-wrap items-center gap-2">
           {/* 3 Mandatory Colors: Black, Red, Green */}
           <div className="flex items-center gap-1.5 bg-white border-2 border-[#E5E5E5] rounded-xl px-2 py-1.5">
@@ -393,6 +473,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
             </button>
           </div>
         </div>
+        )}
 
         {/* Zoom & Pan Controls */}
         <div className="flex items-center gap-1.5 bg-white border-2 border-[#E5E5E5] rounded-xl px-2 py-1.5">
@@ -456,26 +537,41 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
           }}
           className="w-full h-full flex items-center justify-center p-2"
         >
-          <canvas
-            ref={canvasRef}
-            width={BOARD_WIDTH}
-            height={BOARD_HEIGHT}
-            onPointerDown={handlePointerDown}
-            onPointerMove={handlePointerMove}
-            onPointerUp={finishStroke}
-            onPointerCancel={finishStroke}
-            className={`max-w-full max-h-full aspect-[12/7] bg-white rounded-xl border-2 border-[#E5E5E5] shadow-sm ${
-              tool === 'pan'
-                ? 'cursor-grab active:cursor-grabbing'
-                : disabled
-                ? 'cursor-not-allowed'
-                : 'cursor-crosshair'
-            }`}
-          />
+          <div className="relative max-w-full max-h-full aspect-[12/7] w-full bg-white rounded-xl border-2 border-[#E5E5E5] shadow-sm overflow-hidden">
+            {backgroundImage && (
+              <img
+                src={backgroundImage}
+                alt="محتوى الصفحة"
+                className="absolute inset-0 w-full h-full object-contain pointer-events-none select-none"
+              />
+            )}
+            <canvas
+              ref={overlayCanvasRef}
+              width={BOARD_WIDTH}
+              height={BOARD_HEIGHT}
+              className="absolute inset-0 w-full h-full pointer-events-none"
+            />
+            <canvas
+              ref={canvasRef}
+              width={BOARD_WIDTH}
+              height={BOARD_HEIGHT}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={finishStroke}
+              onPointerCancel={finishStroke}
+              className={`relative z-[1] w-full h-full block bg-transparent ${
+                tool === 'pan' || viewOnly
+                  ? 'cursor-grab active:cursor-grabbing'
+                  : disabled
+                  ? 'cursor-not-allowed'
+                  : 'cursor-crosshair'
+              }`}
+            />
+          </div>
         </div>
 
-        {/* Locked Overlay */}
-        {disabled && (
+        {/* Locked Overlay (Never shown in viewOnly Explain Mode so students see the live explanation clearly) */}
+        {disabled && !viewOnly && (
           <div className="absolute inset-0 bg-white/75 backdrop-blur-[2px] flex flex-col items-center justify-center p-6 text-center z-10">
             <DuoLockShield className="w-14 h-14 mb-3" />
             <p className="text-lg font-black text-[#3C3C3C] mb-1">{lockTitle}</p>

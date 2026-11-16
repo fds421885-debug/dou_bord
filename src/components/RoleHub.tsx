@@ -6,7 +6,7 @@ import {
   setDoc,
   updateDoc,
 } from 'firebase/firestore';
-import { AlertCircle, ArrowLeft, Edit3, PlusCircle, Check, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Check, ClipboardCheck, Edit3, FileText, PlusCircle, X } from 'lucide-react';
 import {
   db,
   generateRoomCode,
@@ -14,7 +14,7 @@ import {
   isQuadNameValid,
   OperationType,
 } from '../firebase';
-import type { UserProfile } from '../types';
+import type { SessionType, UserProfile } from '../types';
 import { DUO_IMAGES, DuoArtwork, playDuoSound } from './DuoIcons';
 
 interface RoleHubProps {
@@ -29,6 +29,7 @@ export const RoleHub: React.FC<RoleHubProps> = ({
   onEnterRoom,
 }) => {
   const [sessionTitle, setSessionTitle] = useState('جلسة السبورة التفاعلية');
+  const [sessionType, setSessionType] = useState<SessionType>('quiz');
   const [roomCodeInput, setRoomCodeInput] = useState('');
   const [studentNameConfirm, setStudentNameConfirm] = useState(profile.fullNameQuad);
   const [busyRole, setBusyRole] = useState<'supervisor' | 'student' | null>(null);
@@ -86,6 +87,14 @@ export const RoleHub: React.FC<RoleHubProps> = ({
           supervisorId: profile.uid,
           supervisorName: profile.fullNameQuad,
           status: 'waiting',
+          sessionType,
+          mode: 'quiz',
+          explainPresenterId: profile.uid,
+          explainPresenterName: profile.fullNameQuad,
+          interactiveEditor: 'supervisor',
+          interactiveEditorName: profile.fullNameQuad,
+          currentSlideIndex: 0,
+          slideCount: 0,
           currentQuestionId: '',
           questionCount: 0,
           createdAt: serverTimestamp(),
@@ -277,12 +286,66 @@ export const RoleHub: React.FC<RoleHubProps> = ({
           </div>
 
           <div className="flex flex-col gap-4">
+            {/* Session Type Picker: Quiz vs Interactive */}
+            <div className="flex flex-col gap-2">
+              <span className="text-xs font-extrabold text-[#3C3C3C]">
+                اختر نوع الجلسة
+              </span>
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSessionType('quiz');
+                    playDuoSound('pop');
+                  }}
+                  className={`duo-btn flex flex-col items-center text-center gap-1.5 p-3 rounded-2xl border-2 border-b-4 transition-colors cursor-pointer ${
+                    sessionType === 'quiz'
+                      ? 'bg-[#D7FFB8] border-[#58CC02] text-[#3C3C3C]'
+                      : 'bg-[#F7F7F7] border-[#E5E5E5] text-[#777777] hover:bg-white'
+                  }`}
+                >
+                  <ClipboardCheck
+                    className={`w-6 h-6 ${
+                      sessionType === 'quiz' ? 'text-[#46A302]' : 'text-[#AFAFAF]'
+                    }`}
+                  />
+                  <span className="text-sm font-black">اختبار</span>
+                  <span className="text-[11px] font-bold leading-snug">
+                    أسئلة وسبورات وتقييم وإجابات
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSessionType('interactive');
+                    playDuoSound('pop');
+                  }}
+                  className={`duo-btn flex flex-col items-center text-center gap-1.5 p-3 rounded-2xl border-2 border-b-4 transition-colors cursor-pointer ${
+                    sessionType === 'interactive'
+                      ? 'bg-[#DDF4FF] border-[#1CB0F6] text-[#3C3C3C]'
+                      : 'bg-[#F7F7F7] border-[#E5E5E5] text-[#777777] hover:bg-white'
+                  }`}
+                >
+                  <FileText
+                    className={`w-6 h-6 ${
+                      sessionType === 'interactive' ? 'text-[#1899D6]' : 'text-[#AFAFAF]'
+                    }`}
+                  />
+                  <span className="text-sm font-black">تفاعلي</span>
+                  <span className="text-[11px] font-bold leading-snug">
+                    رفع PDF أو صور والحل عليها بالتزامن
+                  </span>
+                </button>
+              </div>
+            </div>
+
             <div className="flex flex-col gap-1.5">
               <label
                 htmlFor="session-title-input"
                 className="text-xs font-extrabold text-[#3C3C3C]"
               >
-                عنوان الجلسة أو الاختبار
+                {sessionType === 'interactive' ? 'عنوان الجلسة التفاعلية' : 'عنوان الجلسة أو الاختبار'}
               </label>
               <input
                 id="session-title-input"
@@ -290,7 +353,11 @@ export const RoleHub: React.FC<RoleHubProps> = ({
                 maxLength={100}
                 value={sessionTitle}
                 onChange={(e) => setSessionTitle(e.target.value)}
-                placeholder="مثال: اختبار الرياضيات — المعادلات"
+                placeholder={
+                  sessionType === 'interactive'
+                    ? 'مثال: شرح وحل ملزمة الرياضيات PDF'
+                    : 'مثال: اختبار الرياضيات — المعادلات'
+                }
                 className="w-full px-4 py-3 rounded-2xl bg-[#F7F7F7] border-2 border-[#E5E5E5] focus:border-[#58CC02] focus:bg-white outline-none text-sm font-bold text-[#3C3C3C]"
               />
             </div>
@@ -298,13 +365,19 @@ export const RoleHub: React.FC<RoleHubProps> = ({
             <button
               type="submit"
               disabled={busyRole !== null}
-              className="duo-btn w-full flex items-center justify-center gap-2.5 px-6 py-4 rounded-2xl bg-[#58CC02] hover:bg-[#61E002] border-2 border-[#46A302] border-b-[5px] text-white text-base font-black cursor-pointer disabled:opacity-60"
+              className={`duo-btn w-full flex items-center justify-center gap-2.5 px-6 py-4 rounded-2xl border-2 border-b-[5px] text-white text-base font-black cursor-pointer disabled:opacity-60 ${
+                sessionType === 'interactive'
+                  ? 'bg-[#1CB0F6] hover:bg-[#33BCFF] border-[#1899D6]'
+                  : 'bg-[#58CC02] hover:bg-[#61E002] border-[#46A302]'
+              }`}
             >
               <PlusCircle className="w-5 h-5" />
               <span>
                 {busyRole === 'supervisor'
                   ? 'جاري فتح غرفة الانتظار...'
-                  : 'فتح غرفة انتظار جديدة'}
+                  : sessionType === 'interactive'
+                  ? 'فتح غرفة انتظار (وضع تفاعلي)'
+                  : 'فتح غرفة انتظار (وضع اختبار)'}
               </span>
             </button>
           </div>

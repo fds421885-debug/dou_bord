@@ -12,6 +12,7 @@ import {
 import { ArrowRight, CheckCircle2, X, ZoomIn } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import type {
+  InteractiveSlide,
   Participant,
   ParticipantSummary,
   Question,
@@ -19,6 +20,7 @@ import type {
   SavedBoardSnapshot,
   SavedQuestion,
   SavedTest,
+  SlideLayer,
   StudentBoard,
   UserProfile,
 } from '../types';
@@ -58,7 +60,10 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
     archivedTest?.participantsSummary ?? []
   );
   const [savedNotice, setSavedNotice] = useState<boolean>(false);
-  const [zoomedBoard, setZoomedBoard] = useState<SavedBoardSnapshot | null>(null);
+  const [zoomedBoard, setZoomedBoard] = useState<{
+    board: SavedBoardSnapshot;
+    backgroundImage?: string;
+  } | null>(null);
   const [zoomedImg, setZoomedImg] = useState<string | null>(null);
 
   const title = liveRoom ? liveRoom.title : archivedTest?.title ?? 'نتائج الاختبار';
@@ -75,63 +80,108 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
       if (!liveRoom) return;
       setLoading(true);
       try {
-        const qSnap = await getDocs(
-          query(collection(db, 'rooms', liveRoom.id, 'questions'), where('roomId', '==', liveRoom.id))
-        );
-        const rawQuestions: Question[] = [];
-        qSnap.forEach((d) => rawQuestions.push(d.data() as Question));
-        rawQuestions.sort((a, b) => a.orderIndex - b.orderIndex);
-
         const assembledQuestions: SavedQuestion[] = [];
-        for (const q of rawQuestions) {
-          const bSnap = await getDocs(
-            query(
-              collection(db, 'rooms', liveRoom.id, 'questions', q.id, 'boards'),
-              where('roomId', '==', liveRoom.id),
-              where('questionId', '==', q.id)
-            )
+
+        if (liveRoom.sessionType === 'interactive') {
+          const sSnap = await getDocs(
+            query(collection(db, 'rooms', liveRoom.id, 'slides'), where('roomId', '==', liveRoom.id))
           );
-          const boardMap = new Map<string, StudentBoard>();
-          bSnap.forEach((d) => {
-            const b = d.data() as StudentBoard;
-            boardMap.set(b.studentId, b);
-          });
+          const rawSlides: InteractiveSlide[] = [];
+          sSnap.forEach((d) => rawSlides.push(d.data() as InteractiveSlide));
+          rawSlides.sort((a, b) => a.pageIndex - b.pageIndex);
 
-          const boardsList: SavedBoardSnapshot[] = liveParticipants.map((p) => {
-            const found = boardMap.get(p.uid);
-            return {
-              studentId: p.uid,
-              studentName: p.fullNameQuad,
-              strokes: found?.strokes ?? [],
-              submitted: found?.submitted ?? false,
-              verdict: found?.verdict ?? 'pending',
-            };
-          });
+          for (const slide of rawSlides) {
+            const lSnap = await getDocs(
+              query(
+                collection(db, 'rooms', liveRoom.id, 'slides', slide.id, 'layers'),
+                where('roomId', '==', liveRoom.id),
+                where('slideId', '==', slide.id)
+              )
+            );
+            const boardsList: SavedBoardSnapshot[] = [];
+            lSnap.forEach((d) => {
+              const layer = d.data() as SlideLayer;
+              if ((layer.strokes?.length ?? 0) > 0) {
+                boardsList.push({
+                  studentId: layer.authorId,
+                  studentName: layer.authorName,
+                  strokes: layer.strokes ?? [],
+                  submitted: true,
+                  verdict: 'pending',
+                });
+              }
+            });
 
-          // Include any extra board not in participants list just in case
-          boardMap.forEach((b, sid) => {
-            if (!liveParticipants.some((p) => p.uid === sid)) {
-              boardsList.push({
-                studentId: b.studentId,
-                studentName: b.studentName,
-                strokes: b.strokes ?? [],
-                submitted: b.submitted ?? false,
-                verdict: b.verdict ?? 'pending',
-              });
-            }
-          });
+            assembledQuestions.push({
+              id: slide.id,
+              ownerId: profile.uid,
+              orderIndex: slide.pageIndex,
+              text: `صفحة ${slide.pageIndex}`,
+              imageData: slide.imageData,
+              status: 'solving',
+              winnerName: '',
+              boards: boardsList,
+              createdAt: slide.createdAt,
+            });
+          }
+        } else {
+          const qSnap = await getDocs(
+            query(collection(db, 'rooms', liveRoom.id, 'questions'), where('roomId', '==', liveRoom.id))
+          );
+          const rawQuestions: Question[] = [];
+          qSnap.forEach((d) => rawQuestions.push(d.data() as Question));
+          rawQuestions.sort((a, b) => a.orderIndex - b.orderIndex);
 
-          assembledQuestions.push({
-            id: q.id,
-            ownerId: profile.uid,
-            orderIndex: q.orderIndex,
-            text: q.text,
-            imageData: q.imageData,
-            status: q.status,
-            winnerName: q.winnerName,
-            boards: boardsList,
-            createdAt: q.createdAt,
-          });
+          for (const q of rawQuestions) {
+            const bSnap = await getDocs(
+              query(
+                collection(db, 'rooms', liveRoom.id, 'questions', q.id, 'boards'),
+                where('roomId', '==', liveRoom.id),
+                where('questionId', '==', q.id)
+              )
+            );
+            const boardMap = new Map<string, StudentBoard>();
+            bSnap.forEach((d) => {
+              const b = d.data() as StudentBoard;
+              boardMap.set(b.studentId, b);
+            });
+
+            const boardsList: SavedBoardSnapshot[] = liveParticipants.map((p) => {
+              const found = boardMap.get(p.uid);
+              return {
+                studentId: p.uid,
+                studentName: p.fullNameQuad,
+                strokes: found?.strokes ?? [],
+                submitted: found?.submitted ?? false,
+                verdict: found?.verdict ?? 'pending',
+              };
+            });
+
+            // Include any extra board not in participants list just in case
+            boardMap.forEach((b, sid) => {
+              if (!liveParticipants.some((p) => p.uid === sid)) {
+                boardsList.push({
+                  studentId: b.studentId,
+                  studentName: b.studentName,
+                  strokes: b.strokes ?? [],
+                  submitted: b.submitted ?? false,
+                  verdict: b.verdict ?? 'pending',
+                });
+              }
+            });
+
+            assembledQuestions.push({
+              id: q.id,
+              ownerId: profile.uid,
+              orderIndex: q.orderIndex,
+              text: q.text,
+              imageData: q.imageData,
+              status: q.status,
+              winnerName: q.winnerName,
+              boards: boardsList,
+              createdAt: q.createdAt,
+            });
+          }
         }
 
         const pSummary: ParticipantSummary[] = [...liveParticipants]
@@ -147,12 +197,14 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
         setQuestionsData(assembledQuestions);
         setParticipantsData(pSummary);
 
-        // Auto-save full test + all boards into the user's own personal savedTests archive
+        // Auto-save full session + all boards/slides into the user's own personal savedTests archive
         const savedTestRef = doc(db, 'users', profile.uid, 'savedTests', liveRoom.id);
         const existingSaved = await getDoc(savedTestRef);
         if (!existingSaved.exists()) {
-          const batch = writeBatch(db);
-          batch.set(savedTestRef, {
+          const CHUNK = 5;
+          const firstChunk = assembledQuestions.slice(0, CHUNK);
+          const firstBatch = writeBatch(db);
+          firstBatch.set(savedTestRef, {
             id: liveRoom.id,
             ownerId: profile.uid,
             roomCode: liveRoom.id,
@@ -165,7 +217,7 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
             updatedAt: serverTimestamp(),
           });
 
-          for (const sq of assembledQuestions) {
+          for (const sq of firstChunk) {
             const sqRef = doc(
               db,
               'users',
@@ -175,7 +227,7 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
               'questions',
               sq.id
             );
-            batch.set(sqRef, {
+            firstBatch.set(sqRef, {
               id: sq.id,
               ownerId: profile.uid,
               orderIndex: sq.orderIndex,
@@ -187,8 +239,34 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
               createdAt: serverTimestamp(),
             });
           }
+          await firstBatch.commit();
 
-          await batch.commit();
+          for (let i = CHUNK; i < assembledQuestions.length; i += CHUNK) {
+            const batch = writeBatch(db);
+            for (const sq of assembledQuestions.slice(i, i + CHUNK)) {
+              const sqRef = doc(
+                db,
+                'users',
+                profile.uid,
+                'savedTests',
+                liveRoom.id,
+                'questions',
+                sq.id
+              );
+              batch.set(sqRef, {
+                id: sq.id,
+                ownerId: profile.uid,
+                orderIndex: sq.orderIndex,
+                text: sq.text,
+                imageData: sq.imageData,
+                status: sq.status,
+                winnerName: sq.winnerName,
+                boards: sq.boards,
+                createdAt: serverTimestamp(),
+              });
+            }
+            await batch.commit();
+          }
         }
         if (!cancelled) {
           setSavedNotice(true);
@@ -209,6 +287,10 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
   const sortedParticipants = [...participantsData].sort(
     (a, b) => b.score - a.score || b.correctCount - a.correctCount
   );
+
+  const isInteractiveArchive =
+    liveRoom?.sessionType === 'interactive' ||
+    (questionsData.length > 0 && questionsData.every((q) => q.status === 'solving'));
 
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 flex flex-col gap-6">
@@ -315,24 +397,28 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
             )}
           </div>
 
-          {/* All Questions & Student Whiteboards */}
+          {/* All Questions / Interactive Slides & Whiteboards */}
           <div className="flex flex-col gap-5">
             <h2 className="text-xl font-black text-[#3C3C3C]">
-              الأسئلة وصبورات جميع الطلاب ({questionsData.length})
+              {isInteractiveArchive
+                ? `صفحات الملف التفاعلي والحلول (${questionsData.length})`
+                : `الأسئلة وصبورات جميع الطلاب (${questionsData.length})`}
             </h2>
 
             {questionsData.length === 0 ? (
               <div className="duo-card p-8 text-center text-sm font-bold text-[#777777]">
-                لم يتم إدراج أسئلة في هذا الاختبار.
+                {isInteractiveArchive
+                  ? 'لم يتم رفع صفحات في هذه الجلسة التفاعلية.'
+                  : 'لم يتم إدراج أسئلة في هذا الاختبار.'}
               </div>
             ) : (
               questionsData.map((q) => (
                 <div key={q.id} className="duo-card p-5 sm:p-6 flex flex-col gap-5">
-                  {/* Question Header */}
+                  {/* Question / Slide Header */}
                   <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b-2 border-[#F0F0F0]">
                     <div className="flex items-center gap-2.5">
                       <span className="font-latin px-3 py-1 rounded-xl bg-[#1CB0F6] text-white text-sm font-black">
-                        س{q.orderIndex}
+                        {q.status === 'solving' ? `ص${q.orderIndex}` : `س${q.orderIndex}`}
                       </span>
                       <h3 className="text-lg font-black text-[#3C3C3C]">
                         {q.text || 'سؤال بصورة مرفقة'}
@@ -343,6 +429,10 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
                       <div className="flex items-center gap-2 text-[#46A302] font-black text-sm">
                         <DuoCheckBadge className="w-5 h-5" />
                         <span>أجابه: {q.winnerName}</span>
+                      </div>
+                    ) : q.status === 'solving' ? (
+                      <div className="flex items-center gap-2 text-[#1899D6] font-black text-sm">
+                        <span>صفحة تفاعلية محفوظة</span>
                       </div>
                     ) : (
                       <div className="flex items-center gap-2 text-[#EA2B2B] font-black text-sm">
@@ -368,10 +458,12 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
                     </div>
                   )}
 
-                  {/* Student Boards for This Question */}
+                  {/* Student Boards / Interactive Annotations for This Item */}
                   {q.boards.length === 0 ? (
                     <p className="text-sm font-bold text-[#777777]">
-                      لا توجد صبورات مسجلة لهذا السؤال.
+                      {q.status === 'solving'
+                        ? 'لم تُسجّل كتابات فوق هذه الصفحة.'
+                        : 'لا توجد صبورات مسجلة لهذا السؤال.'}
                     </p>
                   ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -396,6 +488,8 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
                                   ? 'إجابة صحيحة'
                                   : b.verdict === 'wrong'
                                   ? 'إجابة خاطئة'
+                                  : q.status === 'solving'
+                                  ? 'حل تفاعلي على الصفحة'
                                   : b.submitted
                                   ? 'تم التسليم'
                                   : 'لم يُسلّم'}
@@ -403,7 +497,12 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
                             </div>
                             <button
                               type="button"
-                              onClick={() => setZoomedBoard(b)}
+                              onClick={() =>
+                                setZoomedBoard({
+                                  board: b,
+                                  backgroundImage: q.status === 'solving' ? q.imageData : undefined,
+                                })
+                              }
                               className="p-2 rounded-xl bg-white border border-[#E5E5E5] text-[#3C3C3C] hover:text-[#1899D6] cursor-pointer"
                               title="تكبير السبورة"
                             >
@@ -412,6 +511,7 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
                           </div>
                           <WhiteboardPreview
                             strokes={b.strokes || []}
+                            backgroundImage={q.status === 'solving' ? q.imageData : undefined}
                             emptyText="سبورة فارغة"
                           />
                         </div>
@@ -437,7 +537,7 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
           >
             <div className="flex justify-between items-center">
               <h3 className="text-lg font-black text-[#3C3C3C]">
-                سبورة: {zoomedBoard.studentName}
+                سبورة: {zoomedBoard.board.studentName}
               </h3>
               <button
                 type="button"
@@ -448,7 +548,8 @@ export const TestResultsView: React.FC<TestResultsViewProps> = ({
               </button>
             </div>
             <WhiteboardPreview
-              strokes={zoomedBoard.strokes || []}
+              strokes={zoomedBoard.board.strokes || []}
+              backgroundImage={zoomedBoard.backgroundImage}
               className="w-full aspect-[12/7]"
             />
           </div>
