@@ -64,6 +64,7 @@ import {
   DuoGemIcon,
   playDuoSound,
 } from './DuoIcons';
+import { solveQuestionWithAi, type AiSolution } from '../aiClient';
 import {
   renderStrokesToDataUrl,
   WhiteboardCanvas,
@@ -83,12 +84,6 @@ interface PrivatePdfDoc {
   fileName: string;
   pages: string[];
   selectedPage: number;
-}
-
-interface AiSolution {
-  finalAnswer: string;
-  steps: string[];
-  explanation: string;
 }
 
 const TIMER_PRESETS = [
@@ -464,29 +459,12 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
     }
   };
 
-  // Helper: call server-side Gemini endpoint (/api/solve-question) for Supervisor only
+  // Helper: call built-in client-side Gemini AI directly (works without backend server on Netlify)
   const requestAiSolve = async (
     questionText: string,
     imageDataUrl: string
   ): Promise<AiSolution> => {
-    const res = await fetch('/api/solve-question', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ questionText, imageDataUrl }),
-    });
-    const data = (await res.json().catch(() => ({}))) as Partial<AiSolution> & {
-      error?: string;
-    };
-    if (!res.ok) {
-      throw new Error(
-        data.error || 'تعذر الحصول على الحل من الذكاء الاصطناعي حالياً.'
-      );
-    }
-    return {
-      finalAnswer: data.finalAnswer || '',
-      steps: Array.isArray(data.steps) ? data.steps : [],
-      explanation: data.explanation || '',
-    };
+    return solveQuestionWithAi(questionText, imageDataUrl);
   };
 
   const getDraftPayload = () => {
