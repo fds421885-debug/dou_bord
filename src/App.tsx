@@ -67,6 +67,41 @@ class AppErrorBoundary extends Component<
   }
 }
 
+const ROOM_STORAGE_PREFIX = 'duoboard_active_room_';
+
+function persistActiveRoom(uid: string, roomId: string | null) {
+  try {
+    const key = `${ROOM_STORAGE_PREFIX}${uid}`;
+    if (roomId) {
+      localStorage.setItem(key, roomId);
+      const url = new URL(window.location.href);
+      url.searchParams.set('room', roomId);
+      window.history.replaceState({}, '', url.toString());
+    } else {
+      localStorage.removeItem(key);
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('room')) {
+        url.searchParams.delete('room');
+        window.history.replaceState({}, '', url.toString());
+      }
+    }
+  } catch {
+    // Ignore storage/history errors in restricted contexts
+  }
+}
+
+function getCandidateSavedRoom(uid: string): string | null {
+  try {
+    const fromStorage = localStorage.getItem(`${ROOM_STORAGE_PREFIX}${uid}`);
+    const fromUrl = new URLSearchParams(window.location.search).get('room');
+    const raw = (fromStorage || fromUrl || '').trim().toUpperCase();
+    if (/^[A-Z0-9_-]{4,16}$/.test(raw)) return raw;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
@@ -78,7 +113,22 @@ export default function App() {
   const [room, setRoom] = useState<Room | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
 
-  // Auth listener
+  const handleEnterRoom = (roomId: string) => {
+    setActiveRoomId(roomId);
+    if (firebaseUser) {
+      persistActiveRoom(firebaseUser.uid, roomId);
+    }
+  };
+
+  const handleLeaveRoom = (nextTab: 'home' | 'saved' = 'home') => {
+    setActiveRoomId(null);
+    setTab(nextTab);
+    if (firebaseUser) {
+      persistActiveRoom(firebaseUser.uid, null);
+    }
+  };
+
+  // Auth listener & room session restore on refresh
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       setFirebaseUser(user);
@@ -97,6 +147,35 @@ export default function App() {
         const snap = await getDoc(doc(db, 'users', user.uid, 'private', 'profile'));
         if (snap.exists()) {
           setProfile(snap.data() as UserProfile);
+
+          // Restore active room if user refreshed the page while inside a room
+          const candidateRoom = getCandidateSavedRoom(user.uid);
+          if (candidateRoom) {
+            try {
+              const rSnap = await getDoc(doc(db, 'rooms', candidateRoom));
+              if (rSnap.exists()) {
+                const rData = rSnap.data() as Room;
+                if (rData.supervisorId === user.uid) {
+                  setActiveRoomId(candidateRoom);
+                  persistActiveRoom(user.uid, candidateRoom);
+                } else {
+                  const pSnap = await getDoc(
+                    doc(db, 'rooms', candidateRoom, 'participants', user.uid)
+                  );
+                  if (pSnap.exists()) {
+                    setActiveRoomId(candidateRoom);
+                    persistActiveRoom(user.uid, candidateRoom);
+                  } else {
+                    persistActiveRoom(user.uid, null);
+                  }
+                }
+              } else {
+                persistActiveRoom(user.uid, null);
+              }
+            } catch {
+              persistActiveRoom(user.uid, null);
+            }
+          }
         } else {
           setProfile(null);
         }
@@ -126,6 +205,8 @@ export default function App() {
           setRoom(snap.data() as Room);
         } else {
           setRoom(null);
+          setActiveRoomId(null);
+          persistActiveRoom(firebaseUser.uid, null);
         }
       },
       (err) => {
@@ -240,10 +321,7 @@ export default function App() {
               {activeRoomId ? (
                 <button
                   type="button"
-                  onClick={() => {
-                    setActiveRoomId(null);
-                    setTab('home');
-                  }}
+                  onClick={() => handleLeaveRoom('home')}
                   className="duo-btn px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-xl bg-white border-2 border-b-4 border-[#E5E5E5] text-[11px] sm:text-xs font-black text-[#777777] hover:text-[#3C3C3C] whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   <span className="sm:hidden">مغادرة</span>
@@ -276,7 +354,7 @@ export default function App() {
                 room={room}
                 participants={participants}
                 isSupervisor={isSupervisor}
-                onLeaveRoom={() => setActiveRoomId(null)}
+                onLeaveRoom={() => handleLeaveRoom('home')}
               />
             ) : room.status === 'active' ? (
               room.sessionType === 'interactive' ? (
@@ -300,17 +378,14 @@ export default function App() {
                 liveRoom={room}
                 liveParticipants={participants}
                 isSupervisor={isSupervisor}
-                onBack={() => {
-                  setActiveRoomId(null);
-                  setTab('saved');
-                }}
+                onBack={() => handleLeaveRoom('saved')}
               />
             )
           ) : tab === 'home' ? (
             <RoleHub
               profile={profile}
               onProfileUpdated={(next) => setProfile(next)}
-              onEnterRoom={(roomId) => setActiveRoomId(roomId)}
+              onEnterRoom={(roomId) => handleEnterRoom(roomId)}
             />
           ) : (
             <SavedTestsView profile={profile} />
