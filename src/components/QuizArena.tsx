@@ -75,6 +75,7 @@ import {
   playDuoSound,
 } from './DuoIcons';
 import { solveQuestionWithAi, type AiSolution } from '../aiClient';
+import { loadQuizDraft, saveQuizDraft } from '../localDraftStore';
 import {
   doesStrokeIntersectEraser,
   renderStrokesToDataUrl,
@@ -187,9 +188,87 @@ export const QuizArena: React.FC<QuizArenaProps> = ({
   const explainFileInputRef = useRef<HTMLInputElement | null>(null);
   const explainAppendModeRef = useRef<boolean>(false);
   const lastExplainEditAtRef = useRef<number>(0);
+  const hydratedDraftKeyRef = useRef<string | null>(null);
   const lastInheritedQuestionIdRef = useRef<string | null>(null);
   const fallbackStartMapRef = useRef<Record<string, number>>({});
   const expiredSoundPlayedRef = useRef<string | null>(null);
+
+  const draftStorageKey = `${profile.uid}_${room.id}`;
+
+  // Restore supervisor's uploaded PDFs, question images, draft strokes, and AI cache on page refresh
+  useEffect(() => {
+    if (!isSupervisor) return;
+    let cancelled = false;
+    hydratedDraftKeyRef.current = null;
+
+    void loadQuizDraft(draftStorageKey).then((saved) => {
+      if (cancelled) return;
+      if (saved) {
+        if (saved.composerTab) setComposerTab(saved.composerTab);
+        if (typeof saved.draftText === 'string') setDraftText(saved.draftText);
+        if (typeof saved.draftImage === 'string') setDraftImage(saved.draftImage);
+        if (Array.isArray(saved.draftBoardStrokes)) {
+          setDraftBoardStrokes(saved.draftBoardStrokes);
+        }
+        if (Array.isArray(saved.pdfDocs)) {
+          setPdfDocs(saved.pdfDocs);
+        }
+        if (saved.activePdfId !== undefined) {
+          setActivePdfId(saved.activePdfId);
+        }
+        if (
+          typeof saved.draftTimerSeconds === 'number' &&
+          lastInheritedQuestionIdRef.current === null
+        ) {
+          setDraftTimerSeconds(saved.draftTimerSeconds);
+        }
+        if (saved.draftAiSolution) {
+          setDraftAiSolution(saved.draftAiSolution);
+        }
+        if (saved.activeAiCache && typeof saved.activeAiCache === 'object') {
+          setActiveAiCache((prev) => ({ ...saved.activeAiCache, ...prev }));
+        }
+      }
+      hydratedDraftKeyRef.current = draftStorageKey;
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isSupervisor, draftStorageKey]);
+
+  // Persist supervisor's uploaded PDFs, question images, and drafts automatically to IndexedDB
+  useEffect(() => {
+    if (!isSupervisor || hydratedDraftKeyRef.current !== draftStorageKey) return;
+    const timer = window.setTimeout(() => {
+      void saveQuizDraft({
+        key: draftStorageKey,
+        composerTab,
+        draftText,
+        draftImage,
+        draftBoardStrokes,
+        pdfDocs,
+        activePdfId,
+        draftTimerSeconds,
+        draftAiSolution,
+        activeAiCache,
+        updatedAt: Date.now(),
+      });
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [
+    isSupervisor,
+    draftStorageKey,
+    composerTab,
+    draftText,
+    draftImage,
+    draftBoardStrokes,
+    pdfDocs,
+    activePdfId,
+    draftTimerSeconds,
+    draftAiSolution,
+    activeAiCache,
+  ]);
 
   // Subscribe to published questions in the room
   useEffect(() => {
